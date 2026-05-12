@@ -59,6 +59,12 @@ Parsers are self-contained. Handling parser imported from Handling_Editor.
 # open_vehicle_workshop
 
 import math, sys, os, json
+# repo root for apps.* imports
+_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+if _root not in sys.path: sys.path.insert(0, _root)
+# component dir for handling_editor, tool_menu_mixin
+_comp = os.path.dirname(os.path.abspath(__file__))
+if _comp not in sys.path: sys.path.insert(0, _comp)
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
