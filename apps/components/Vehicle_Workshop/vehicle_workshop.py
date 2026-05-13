@@ -1415,14 +1415,23 @@ class _ToolbarMixin:
                     except Exception:
                         return 0
 
-                # 0. models/generic/
+                # 0. models/generic/ — always load vehicle.txd + wheels.txd
+                # wheels.txd loaded unconditionally (wheel geoms need it even if not in miss)
                 if game_root:
                     generic = os.path.join(game_root,'models','generic')
                     for fn in ('vehicle.txd','wheels.txd','vehiclecommon.txd'):
                         p = os.path.join(generic, fn)
-                        if os.path.isfile(p) and miss:
+                        if os.path.isfile(p):
                             try:
-                                with open(p,'rb') as f: _try_txd_data(f.read())
+                                with open(p,'rb') as f: raw=f.read()
+                                # For wheels.txd always collect all textures
+                                if 'wheels' in fn.lower():
+                                    from apps.methods.txd_parser import parse_txd
+                                    for t in parse_txd(raw):
+                                        if t.get('rgba_data') and t['width']>0:
+                                            collected.append(t)
+                                elif miss:
+                                    _try_txd_data(raw)
                             except Exception: pass
                     # Store wheels.DFF path for assembly use
                     for wfn in ('wheels.DFF','wheels.dff'):
@@ -2057,13 +2066,22 @@ class _LayoutMixin:
         # Open DFF / Open TXD buttons at bottom of left panel
 
         btn_row = QHBoxLayout(); btn_row.setSpacing(4)
-        self._vw_open_dff_btn = QPushButton("Open DFF")
-        self._vw_open_txd_btn = QPushButton("Open TXD")
-        for btn, cb in [(self._vw_open_dff_btn, self._vw_pick_dff),
-                        (self._vw_open_txd_btn, self._vw_pick_txd)]:
-            btn.setFixedHeight(26); btn.setFont(self.panel_font)
-            btn.clicked.connect(cb)
-            btn_row.addWidget(btn)
+        from PyQt6.QtWidgets import QToolButton
+        ic=self._get_icon_color()
+        for label,tip,cb,iname in [
+                ('Open DFF','Open DFF model',self._vw_pick_dff,'open'),
+                ('Open TXD','Open TXD textures',self._vw_pick_txd,'open')]:
+            b=QToolButton(); b.setFixedHeight(26); b.setFont(self.panel_font); b.setToolTip(tip)
+            b.setText(label)
+            try:
+                ico=getattr(SVGIconFactory,f'{iname}_icon',None)
+                if ico: b.setIcon(ico(14,ic)); b.setIconSize(QSize(14,14)); b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            except Exception: pass
+            b.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Fixed)
+            b.clicked.connect(cb); btn_row.addWidget(b)
+        self._vw_open_dff_btn=btn_row.itemAt(0).widget()
+        self._vw_open_txd_btn=btn_row.itemAt(1).widget()
+
         outer.addLayout(btn_row)
 
         return panel
@@ -3333,8 +3351,23 @@ class HandlingTab(QWidget): #vers 1
         self._veh_list.currentRowChanged.connect(self._on_select)
         ll.addWidget(self._veh_list)
         br = QHBoxLayout()
-        for lbl, fn in [("Add", self._add), ("Del", self._delete), ("Dup", self._dup)]:
-            b = QPushButton(lbl); b.setFixedHeight(24); b.clicked.connect(fn); br.addWidget(b)
+        for lbl, tip, fn, iname in [
+                ("Add", "Add entry",       self._add,    "add"),
+                ("Del", "Delete entry",    self._delete, "delete"),
+                ("Dup", "Duplicate entry", self._dup,    "duplicate")]:
+            from PyQt6.QtWidgets import QToolButton
+            b = QToolButton(); b.setFixedHeight(24); b.setToolTip(tip)
+            b.setText(lbl)
+            try:
+                ico = getattr(SVGIconFactory, f'{iname}_icon', None)
+                if ico:
+                    b.setIcon(ico(16, '#ffffff'))
+                    b.setIconSize(QSize(14,14))
+                    b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            except Exception:
+                pass
+            b.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            b.clicked.connect(fn); br.addWidget(b)
         ll.addLayout(br)
         sp.addWidget(left)
         # Centre
@@ -3491,7 +3524,15 @@ class CarColoursTab(QWidget): #vers 1
         self._veh_list.currentRowChanged.connect(self._on_vehicle_selected)
         ll.addWidget(self._veh_list)
         br = QHBoxLayout()
-        for lbl, fn in [("Add",self._add_vehicle),("Del",self._delete_vehicle)]:
+        for lbl, tip, fn, iname in [("Add",'Add',self._add_vehicle,'add'),("Del",'Delete',self._delete_vehicle,'delete')]:
+            from PyQt6.QtWidgets import QToolButton
+            b=QToolButton(); b.setFixedHeight(24); b.setToolTip(tip); b.setText(lbl)
+            try:
+                ico=getattr(SVGIconFactory,f'{iname}_icon',None)
+                if ico: b.setIcon(ico(14,'#ffffff')); b.setIconSize(QSize(14,14)); b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            except Exception: pass
+            b.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Fixed)
+
             b=QPushButton(lbl); b.setFixedHeight(24); b.clicked.connect(fn); br.addWidget(b)
         ll.addLayout(br)
         sp.addWidget(left)
@@ -3628,7 +3669,15 @@ class CarModsTab(QWidget): #vers 1
         self._veh_list = QListWidget(); self._veh_list.currentRowChanged.connect(self._on_vehicle_selected)
         ll.addWidget(self._veh_list)
         br = QHBoxLayout()
-        for lbl, fn in [("Add",self._add_vehicle),("Del",self._delete_vehicle)]:
+        for lbl, tip, fn, iname in [("Add",'Add',self._add_vehicle,'add'),("Del",'Delete',self._delete_vehicle,'delete')]:
+            from PyQt6.QtWidgets import QToolButton
+            b=QToolButton(); b.setFixedHeight(24); b.setToolTip(tip); b.setText(lbl)
+            try:
+                ico=getattr(SVGIconFactory,f'{iname}_icon',None)
+                if ico: b.setIcon(ico(14,'#ffffff')); b.setIconSize(QSize(14,14)); b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            except Exception: pass
+            b.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Fixed)
+
             b=QPushButton(lbl); b.setFixedHeight(24); b.clicked.connect(fn); br.addWidget(b)
         ll.addLayout(br); sp.addWidget(left)
         right = QWidget(); rl = QVBoxLayout(right); rl.setContentsMargins(4,4,4,4)
