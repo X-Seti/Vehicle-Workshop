@@ -298,6 +298,22 @@ class DFFViewport(QOpenGLWidget if OPENGL_AVAILABLE else QWidget):
         self._assembly_mode = False
         self._all_geoms     = []
         self._show_lod      = False   # hide _vlo by default
+        self._hidden_frames = set()   # frames hidden via hierarchy tree
+
+        # Animation state
+        self._anim_enabled  = False   # master on/off
+        self._anim_timer    = None    # QTimer
+        self._anim_frame_angles = {}  # frame_name -> current angle (degrees)
+        self._anim_door_open    = {}  # frame_name -> bool (open/closed)
+        self._anim_speed        = 1.0 # multiplier
+        # Rotor/prop spin rates (degrees per tick at 30fps)
+        self._anim_rates = {
+            'moving_rotor':  720.0, 'moving_rotor2': 360.0,
+            'prop':          540.0, 'prop_front':    540.0,
+            'wheel':          90.0,  # rolling speed placeholder
+            'misc_a':        180.0,  'misc_b':        180.0,
+        }
+
         # Vehicle paint preview colours (user can change via Light Setup or future colour picker)
         self._paint1 = (0.80, 0.20, 0.20)  # primary   — default red
         self._paint2 = (0.20, 0.20, 0.80)  # secondary — default blue
@@ -692,14 +708,28 @@ class DFFViewport(QOpenGLWidget if OPENGL_AVAILABLE else QWidget):
             self._pan_x=-(max(xs)+min(xs))/2; self._pan_y=-(max(ys)+min(ys))/2
         self.update()
 
-    def _calc_world_matrix(self, frames, frame_idx): #vers 1
-        """Compute cumulative world matrix for a frame chain."""
+    def _calc_world_matrix(self, frames, frame_idx): #vers 2
+        """Compute cumulative world matrix for a frame chain.
+        Applies animation rotations for rotor/door/prop frames."""
         r=[1,0,0,0,1,0,0,0,1]; tx=ty=tz=0.0
         visited=set(); idx=frame_idx; chain=[]
         while 0<=idx<len(frames) and idx not in visited:
-            visited.add(idx); chain.append(frames[idx]); idx=frames[idx].parent_index
-        for frame in reversed(chain):
+            visited.add(idx); chain.append((idx,frames[idx])); idx=frames[idx].parent_index
+        for fi,frame in reversed(chain):
             fr=frame.rotation; fp=frame.position
+            # Apply animation rotation if any
+            if self._anim_enabled:
+                anim_r = self._get_anim_rotation(frame.name or '')
+                if anim_r:
+                    fr=[fr[0]*anim_r[0]+fr[1]*anim_r[3]+fr[2]*anim_r[6],
+                        fr[0]*anim_r[1]+fr[1]*anim_r[4]+fr[2]*anim_r[7],
+                        fr[0]*anim_r[2]+fr[1]*anim_r[5]+fr[2]*anim_r[8],
+                        fr[3]*anim_r[0]+fr[4]*anim_r[3]+fr[5]*anim_r[6],
+                        fr[3]*anim_r[1]+fr[4]*anim_r[4]+fr[5]*anim_r[7],
+                        fr[3]*anim_r[2]+fr[4]*anim_r[5]+fr[5]*anim_r[8],
+                        fr[6]*anim_r[0]+fr[7]*anim_r[3]+fr[8]*anim_r[6],
+                        fr[6]*anim_r[1]+fr[7]*anim_r[4]+fr[8]*anim_r[7],
+                        fr[6]*anim_r[2]+fr[7]*anim_r[5]+fr[8]*anim_r[8]]
             nr=[r[0]*fr[0]+r[1]*fr[3]+r[2]*fr[6],r[0]*fr[1]+r[1]*fr[4]+r[2]*fr[7],r[0]*fr[2]+r[1]*fr[5]+r[2]*fr[8],
                 r[3]*fr[0]+r[4]*fr[3]+r[5]*fr[6],r[3]*fr[1]+r[4]*fr[4]+r[5]*fr[7],r[3]*fr[2]+r[4]*fr[5]+r[5]*fr[8],
                 r[6]*fr[0]+r[7]*fr[3]+r[8]*fr[6],r[6]*fr[1]+r[7]*fr[4]+r[8]*fr[7],r[6]*fr[2]+r[7]*fr[5]+r[8]*fr[8]]
@@ -708,7 +738,64 @@ class DFFViewport(QOpenGLWidget if OPENGL_AVAILABLE else QWidget):
         return r,tx,ty,tz
 
 
+    # ── Animation ─────────────────────────────────────────────────────────
+
+    def set_animation(self, enabled: bool): #vers 1
+        self._anim_enabled = enabled
+        if enabled:
+            if self._anim_timer is None:
+                from PyQt6.QtCore import QTimer
+                self._anim_timer = QTimer(self)
+                self._anim_timer.timeout.connect(self._anim_tick)
+            self._anim_timer.start(33)  # ~30fps
+        else:
+            if self._anim_timer: self._anim_timer.stop()
+            self.update()
+
+    def _anim_tick(self): #vers 1
+        if not self._anim_enabled or not self._assembly_mode: return
+        changed = False
+        for fname, rate in self._anim_rates.items():
+            cur = self._anim_frame_angles.get(fname, 0.0)
+            self._anim_frame_angles[fname] = (cur + rate * self._anim_speed / 30.0) % 360.0
+            changed = True
+        if changed: self._rebuild_anim_geoms()
+
+    def _rebuild_anim_geoms(self): #vers 1
+        m = getattr(self, '_dff_model', None)
+        if not m: return
+        self.load_all_geometries(
+            m.geometries, [g.materials for g in m.geometries],
+            m.frames, m.atomics,
+            damaged=getattr(self, '_damaged', False))
+
+    def toggle_door(self, door_name: str): #vers 1
+        cur = self._anim_door_open.get(door_name, False)
+        self._anim_door_open[door_name] = not cur
+        self._rebuild_anim_geoms()
+
+    def _get_anim_rotation(self, frame_name: str): #vers 1
+        name = frame_name.lower()
+        # Rotor / prop — spin around Y axis (GTA Y-forward, rotor spins around vehicle up)
+        for key in ('moving_rotor', 'moving_rotor2', 'prop', 'misc_a', 'misc_b'):
+            if key in name:
+                angle = self._anim_frame_angles.get(key, 0.0)
+                ca=math.cos(math.radians(angle)); sa=math.sin(math.radians(angle))
+                return [ca,-sa,0, sa,ca,0, 0,0,1]  # rotate around Z
+        # Door / bonnet / boot — rotate around Y axis, open to ~70 degrees
+        for key in ('door_lf','door_rf','door_lr','door_rr','bonnet','boot'):
+            if key in name:
+                is_open = self._anim_door_open.get(name, False)
+                angle = 70.0 if is_open else 0.0
+                ca=math.cos(math.radians(angle)); sa=math.sin(math.radians(angle))
+                return [1,0,0, 0,ca,-sa, 0,sa,ca]  # rotate around X
+        return None  # no animation for this frame
+
+    def set_animation_speed(self, speed: float): #vers 1
+        self._anim_speed = max(0.1, speed)
+
     def set_wheel_heading(self, angle_deg: float): #vers 1
+
         self._wheel_heading = angle_deg
         if getattr(self,'_assembly_mode',False) and getattr(self,'_dff_model',None):
             m=self._dff_model
@@ -2178,9 +2265,50 @@ class _LayoutMixin:
 
         lay.addSpacing(6)
 
+        #  Animate
+        lbl_an = QLabel('Animate'); lbl_an.setFont(self.panel_font)
+        lay.addWidget(lbl_an)
+        self._anim_btn = _btn('Play', 'Start/stop animation',
+            lambda checked: self.viewport.set_animation(checked), None, True, False)
+        lay.addWidget(self._anim_btn)
+
+        # Speed
+        from PyQt6.QtWidgets import QSlider
+        spd_row = QHBoxLayout()
+        spd_lbl = QLabel('Speed'); spd_lbl.setFont(self.infobar_font)
+        self._anim_speed_slider = QSlider(Qt.Orientation.Horizontal)
+        self._anim_speed_slider.setRange(1, 30)
+        self._anim_speed_slider.setValue(10)
+        self._anim_speed_slider.setToolTip('Animation speed')
+        self._anim_speed_slider.valueChanged.connect(
+            lambda v: self.viewport.set_animation_speed(v / 10.0))
+        spd_row.addWidget(spd_lbl); spd_row.addWidget(self._anim_speed_slider, 1)
+        lay.addLayout(spd_row)
+
+        # Door toggles
+        door_row = QHBoxLayout(); door_row.setSpacing(2)
+        for dlabel, dname in [('LF','door_lf'),('RF','door_rf'),
+                               ('LR','door_lr'),('RR','door_rr')]:
+            db = QPushButton(dlabel); db.setFixedHeight(22); db.setFixedWidth(28)
+            db.setFont(self.infobar_font)
+            db.setToolTip(f'Toggle {dname}')
+            db.clicked.connect(lambda _=False, n=dname: self.viewport.toggle_door(n))
+            door_row.addWidget(db)
+        door_row.addStretch()
+        # Bonnet / Boot
+        for dlabel, dname in [('Hood','bonnet'),('Boot','boot')]:
+            db = QPushButton(dlabel); db.setFixedHeight(22)
+            db.setFont(self.infobar_font); db.setToolTip(f'Toggle {dname}')
+            db.clicked.connect(lambda _=False, n=dname: self.viewport.toggle_door(n))
+            door_row.addWidget(db)
+        lay.addLayout(door_row)
+
+        lay.addSpacing(4)
+
         #  Wheels
         lbl_w = QLabel('Wheels'); lbl_w.setFont(self.panel_font)
         lay.addWidget(lbl_w)
+
         from PyQt6.QtWidgets import QSlider
         self._wheel_heading_slider = QSlider(Qt.Orientation.Horizontal)
         self._wheel_heading_slider.setRange(-35, 35)
