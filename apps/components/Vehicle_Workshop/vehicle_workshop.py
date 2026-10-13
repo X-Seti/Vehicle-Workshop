@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-#this belongs in apps/components/Vehicle_Workshop/vehicle_workshop.py - Version: 2
+#this belongs in apps/components/Vehicle_Workshop/vehicle_workshop.py - Version: 13
 # X-Seti - May08 2026 - Img Factory 1.6 - Vehicle Workshop
 
 """
@@ -8,68 +8,24 @@ Tabs: Handling (handling.cfg) | Car Colours (carcols.dat) | Car Mods (carmods.da
 
 Parsers are self-contained. Handling parser imported from Handling_Editor.
 """
-
-##Methods list -
-# CarColour.__init__
-# CarColsParser.__init__
-# CarColsParser.load
-# CarColsParser.save
-# CarColsParser._detect_game
-# CarModEntry.__init__
-# CarModsParser.__init__
-# CarModsParser.load
-# CarModsParser.save
-# ColourSwatchGrid.__init__
-# ColourSwatchGrid.set_palette
-# ColourSwatchGrid.paintEvent
-# ColourSwatchGrid.mousePressEvent
-# HandlingTab.__init__
-# HandlingTab._build_ui
-# HandlingTab.load_file
-# HandlingTab.save_file
-# CarColoursTab.__init__
-# CarColoursTab._build_ui
-# CarColoursTab.load_file
-# CarColoursTab.save_file
-# CarColoursTab._on_vehicle_selected
-# CarColoursTab._populate_vehicle_colours
-# CarColoursTab._on_colour_index_clicked
-# CarColoursTab._add_vehicle
-# CarColoursTab._delete_vehicle
-# CarColoursTab._edit_selected_colour
-# CarColoursTab._add_pair
-# CarColoursTab._remove_pair
-# CarModsTab.__init__
-# CarModsTab._build_ui
-# CarModsTab.load_file
-# CarModsTab.save_file
-# CarModsTab._on_vehicle_selected
-# CarModsTab._populate_mods
-# CarModsTab._add_vehicle
-# CarModsTab._delete_vehicle
-# CarModsTab._add_mod
-# CarModsTab._remove_mod
-# VehicleWorkshop.__init__
-# VehicleWorkshop._build_menus_into_qmenu
-# VehicleWorkshop._open_file
-# VehicleWorkshop._save_file
-# VehicleWorkshop._save_as
-# VehicleWorkshop._open_specific
-# VehicleWorkshop.setup_ui
-# open_vehicle_workshop
-
-import math, sys, os, json
+import os, json, sys, threading, struct, re, math, shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 
+if sys.platform.startswith('linux'):   # xcb only exists on Linux
+    os.environ.setdefault('QT_QPA_PLATFORM', 'xcb')
+    os.environ.setdefault('QSG_RHI_BACKEND',  'opengl')
+
+#Adding Standalone
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = Path(current_dir).parents[2]
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel, QLineEdit,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QSplitter, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QScrollArea, QGroupBox, QTabWidget,
     QDoubleSpinBox, QSpinBox, QComboBox, QCheckBox, QPushButton,
     QFileDialog, QMessageBox, QApplication, QFormLayout, QFrame,
@@ -78,13 +34,13 @@ from PyQt6.QtWidgets import (
     QDialog, QFontComboBox, QDialogButtonBox, QTextEdit, QButtonGroup
 )
 
-from PyQt6.QtCore import Qt, QSize, QPoint, pyqtSignal, QTimer
-from PyQt6.QtGui import QColor, QFont, QPainter, QBrush, QPen, QIcon, QKeySequence, QShortcut, QPolygon
-
+from apps.methods.ribbon_system import RibbonMixin
+from PyQt6.QtCore import Qt, QPoint, QSize, QThread, pyqtSignal, QTimer
+from PyQt6.QtGui import QAction, QBrush, QColor, QFont, QIcon, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QPolygon, QShortcut
 
 try:
     from PyQt6.QtOpenGLWidgets import QOpenGLWidget
-    from PyQt6.QtOpenGL import QOpenGLContext
+    #from PyQt6.QtOpenGL import QOpenGLContext
     from PyQt6.QtGui import QSurfaceFormat
     from OpenGL.GL  import *
     from OpenGL.GLU import *
@@ -100,7 +56,7 @@ except Exception:
     OPENGL_AVAILABLE   = False
     print("[Vehicle_Workshop] PyOpenGL not available — install python3-opengl")
 
-# ── Path setup ───────────────────────────────────────────────────────────────
+# - Path setup
 # depends/ = tool-specific only (handling_editor, svg_icons, tool_menu_mixin)
 # apps/ = shared (methods, utils, themes) — via project_root when in IMG Factory
 _depends = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'depends')
@@ -131,7 +87,7 @@ except ImportError:
     except ImportError:
         class SVGIconFactory:
             @staticmethod
-            def _s(sz=20, c=None): return QIcon()
+            def _s(sz=20, c=None): return QIcon()  #vers 1
             open_icon = save_icon = export_icon = import_icon = delete_icon = \
             undo_icon = info_icon = properties_icon = minimize_icon = \
             maximize_icon = close_icon = settings_icon = search_icon = \
@@ -141,6 +97,8 @@ except ImportError:
             rotate_cw_icon = rotate_ccw_icon = flip_horz_icon = \
             flip_vert_icon = folder_icon = staticmethod(_s)
 
+from apps.methods.dff_viewport import VehicleViewport, DFFViewport
+
 # ToolMenuMixin — depends/ tool-specific copy
 try:
     from tool_menu_mixin import ToolMenuMixin
@@ -149,28 +107,25 @@ except ImportError:
         from apps.gui.tool_menu_mixin import ToolMenuMixin
     except ImportError:
         class ToolMenuMixin:
-            def _build_menus_into_qmenu(self, pm): pass
+            def _build_menus_into_qmenu(self, pm): pass  #vers 1
 
 # GLViewportMixin — embedded in this file
 class GLViewportMixin: pass
 
-# HandlingParser — depends/ tool-specific copy
+# Handling file model (byte-exact) - the old import chain always finished with
+# _HANDLING_AVAILABLE = False, so the Handling tab never worked.
+from apps.methods.handling_file import HandlingParser, HandlingEntry, header_fields
 try:
-    from handling_editor import HandlingParser, HandlingEntry, VC_FIELDS, HANDLING_FLAGS
-    _HANDLING_AVAILABLE = True
-except ImportError:
-    try:
-        from apps.components.Handling_Editor.handling_editor import (
-            HandlingParser, HandlingEntry, VC_FIELDS, HANDLING_FLAGS
-        )
-        _HANDLING_AVAILABLE = True
-    except ImportError:
-        _HANDLING_AVAILABLE = False
+    from apps.components.Handling_Editor.handling_editor import VC_FIELDS, HANDLING_FLAGS
+except Exception:
+    VC_FIELDS, HANDLING_FLAGS = [("HandlingName", "str", "", "", "Handling name")], {}
+_HANDLING_AVAILABLE = True
 
-    _HANDLING_AVAILABLE = False
+from apps.methods.dff_parser import load_dff, DFFParser
+from apps.methods.txd_parser import parse_txd
 
 # - Detect standalone vs docked
-def _is_standalone():
+def _is_standalone():  #vers 1
     import inspect
     frame = inspect.currentframe()
     try:
@@ -185,14 +140,211 @@ def _is_standalone():
 STANDALONE_MODE = _is_standalone()
 DEBUG_STANDALONE = False
 
+##Methods list -
+# _is_standalone
+# open_vehicle_workshop
+# CarColour.__str__
+# CarColour.to_qcolor
+# CarColoursTab.__init__
+# CarColoursTab._add_pair
+# CarColoursTab._add_vehicle
+# CarColoursTab._build_ui
+# CarColoursTab._delete_vehicle
+# CarColoursTab._edit_selected_colour
+# CarColoursTab._on_colour_index_clicked
+# CarColoursTab._on_vehicle_selected
+# CarColoursTab._populate_vehicle_colours
+# CarColoursTab._refresh_veh_list
+# CarColoursTab._remove_pair
+# CarColoursTab.load_file
+# CarColoursTab.save_file
+# CarColsParser.__init__
+# CarColsParser._detect_game
+# CarColsParser.load
+# CarColsParser.save
+# CarModsParser.__init__
+# CarModsParser.load
+# CarModsParser.save
+# CarModsTab.__init__
+# CarModsTab._add_mod
+# CarModsTab._add_vehicle
+# CarModsTab._build_ui
+# CarModsTab._delete_vehicle
+# CarModsTab._on_vehicle_selected
+# CarModsTab._populate_mods
+# CarModsTab._refresh_list
+# CarModsTab._remove_mod
+# CarModsTab.load_file
+# CarModsTab.save_file
+# ColourSwatchGrid.__init__
+# ColourSwatchGrid.colour_clicked
+# ColourSwatchGrid.mousePressEvent
+# ColourSwatchGrid.paintEvent
+# ColourSwatchGrid.set_palette
+# GUIWorkshop.__init__
+# GUIWorkshop._get_resize_corner
+# GUIWorkshop._get_resize_direction
+# GUIWorkshop._handle_corner_resize
+# GUIWorkshop._handle_resize
+# GUIWorkshop._is_on_draggable_area
+# GUIWorkshop._load_fonts_from_settings
+# GUIWorkshop._refresh_corner_overlay
+# GUIWorkshop._setup_corner_overlay
+# GUIWorkshop._setup_shortcuts
+# GUIWorkshop._toggle_maximize
+# GUIWorkshop._update_cursor
+# GUIWorkshop.closeEvent
+# GUIWorkshop.get_content_margins
+# GUIWorkshop.get_panel_margins
+# GUIWorkshop.mousePressEvent
+# GUIWorkshop.mouseReleaseEvent
+# GUIWorkshop.paintEvent
+# GUIWorkshop.resizeEvent
+# GUIWorkshop.showEvent
+# GUIWorkshop.toggle_dock_mode
+# HandlingTab.__init__
+# HandlingTab._add
+# HandlingTab._build_ui
+# HandlingTab._changed
+# HandlingTab._delete
+# HandlingTab._dup
+# HandlingTab._on_select
+# HandlingTab._populate
+# HandlingTab._refresh_list
+# HandlingTab._update_stats
+# HandlingTab.load_file
+# HandlingTab.save_file
+# VehicleWorkshop.__init__
+# VehicleWorkshop._build_menus_into_qmenu
+# VehicleWorkshop._create_centre_panel
+# VehicleWorkshop._create_preview_tab
+# VehicleWorkshop._light_setup_dialog
+# VehicleWorkshop._open_file
+# VehicleWorkshop._open_specific
+# VehicleWorkshop._save_as
+# VehicleWorkshop._save_file
+# VehicleWorkshop._show_progress
+# VehicleWorkshop._vw_load_dff
+# VehicleWorkshop._vw_load_txd
+# VehicleWorkshop._vw_pick_dff
+# VehicleWorkshop._vw_pick_paint1
+# VehicleWorkshop._vw_pick_paint2
+# VehicleWorkshop._vw_pick_txd
+# VehicleWorkshop._vw_set_mode
+# VehicleWorkshop._vw_toggle_assembly
+# VehicleWorkshop.setup_ui
+# WorkshopSettings.__init__
+# WorkshopSettings._load
+# WorkshopSettings.add_recent
+# WorkshopSettings.get
+# WorkshopSettings.get_recent
+# WorkshopSettings.save
+# WorkshopSettings.set
+# _CornerOverlay.__init__
+# _CornerOverlay._get_ui_color
+# _CornerOverlay._update_mask
+# _CornerOverlay.paintEvent
+# _CornerOverlay.resizeEvent
+# _CornerOverlay.setGeometry
+# _CornerOverlay.update_state
+# _LayoutMixin._create_centre_panel
+# _LayoutMixin._create_left_panel
+# _LayoutMixin._create_left_panel_old
+# _LayoutMixin._create_right_panel
+# _LayoutMixin._create_right_panel_old
+# _LayoutMixin._create_status_bar
+# _LayoutMixin._filter_img_list
+# _LayoutMixin._light_setup_dialog
+# _LayoutMixin._make_section_header
+# _LayoutMixin._on_frame_visibility_changed
+# _LayoutMixin._on_geom_selected
+# _LayoutMixin._on_img_entry_dclicked
+# _LayoutMixin._populate_frame_tree
+# _LayoutMixin._populate_geom_list
+# _LayoutMixin._populate_sidebar
+# _LayoutMixin._set_status
+# _LayoutMixin.get_content_margins
+# _LayoutMixin.get_panel_margins
+# _LayoutMixin.get_tab_margins
+# _LayoutMixin.setup_ui
+# _LogicStubsMixin._build_menus_into_qmenu
+# _LogicStubsMixin._clear_recent
+# _LogicStubsMixin._copy_item
+# _LogicStubsMixin._export_file
+# _LogicStubsMixin._fit
+# _LogicStubsMixin._import_file
+# _LogicStubsMixin._jump
+# _LogicStubsMixin._on_add_item
+# _LogicStubsMixin._on_list_selection_changed
+# _LogicStubsMixin._on_remove_item
+# _LogicStubsMixin._on_tab_changed
+# _LogicStubsMixin._on_toolbar_action
+# _LogicStubsMixin._open_file
+# _LogicStubsMixin._paste_item
+# _LogicStubsMixin._redo
+# _LogicStubsMixin._save_file
+# _LogicStubsMixin._set_active_tool
+# _LogicStubsMixin._undo
+# _LogicStubsMixin._zoom
+# _LogicStubsMixin.get_menu_title
+# _ToolbarMixin._apply_theme
+# _ToolbarMixin._auto_load_shared_txds
+# _ToolbarMixin._collect_needed_textures
+# _ToolbarMixin._create_toolbar
+# _ToolbarMixin._cycle_carcol
+# _ToolbarMixin._export_dff
+# _ToolbarMixin._find_game_root
+# _ToolbarMixin._get_accent_color
+# _ToolbarMixin._get_game_root
+# _ToolbarMixin._get_icon_color
+# _ToolbarMixin._get_ide_db
+# _ToolbarMixin._launch_theme_settings
+# _ToolbarMixin._load_carcols
+# _ToolbarMixin._load_vehicle_meta
+# _ToolbarMixin._lookup_txd_for_stem
+# _ToolbarMixin._on_img_entry_dclicked
+# _ToolbarMixin._on_menu_btn_clicked
+# _ToolbarMixin._on_shared_txds_found
+# _ToolbarMixin._open_app_settings
+# _ToolbarMixin._open_dff
+# _ToolbarMixin._open_txd
+# _ToolbarMixin._parse_sa_vehicles_ide
+# _ToolbarMixin._pick_paint1
+# _ToolbarMixin._pick_paint2
+# _ToolbarMixin._refresh_icons
+# _ToolbarMixin._set_anim_speed
+# _ToolbarMixin._set_mode
+# _ToolbarMixin._set_paint_pair
+# _ToolbarMixin._set_wheel_steer
+# _ToolbarMixin._show_about
+# _ToolbarMixin._show_dropdown_menu
+# _ToolbarMixin._show_popup_menu
+# _ToolbarMixin._show_workshop_settings
+# _ToolbarMixin._strip_tex_suffix
+# _ToolbarMixin._toggle_animation
+# _ToolbarMixin._toggle_assembly_mode
+# _ToolbarMixin._toggle_bounds
+# _ToolbarMixin._toggle_com_indicator
+# _ToolbarMixin._toggle_damage_mode
+# _ToolbarMixin._toggle_door
+# _ToolbarMixin._toggle_dummy_overlay
+# _ToolbarMixin._toggle_lod_mode
+# _ToolbarMixin._toggle_seat_overlay
+# _ToolbarMixin._toggle_show_wheels
+# _ToolbarMixin._toggle_suspension_vis
+# _ToolbarMixin._update_paint_btns
+# _ToolbarMixin._upload_txd_additive
+# _ToolbarMixin.load_dff
+# _ToolbarMixin.load_img
+# _ToolbarMixin.load_txd
 
+# Build information (decorative module-level copy; self.App_name/App_build
+# used at runtime come from the GUIWorkshop class attributes instead)
 App_name   = "Vehicle Workshop"
 App_build  = "Build 2"
 App_auth   = "X-Seti"
 config_key = "vehicle_workshop"
 
-
-#    WorkshopSettings
 class WorkshopSettings:
     """Per-app JSON settings.  Stored at ~/.config/imgfactory/{config_key}.json
     Same pattern as RADSettings / WATSettings across all workshops.
@@ -223,14 +375,14 @@ class WorkshopSettings:
         "recent_files": [],
     }
 
-    def __init__(self, config_key: str = "gui_workshop"):
-        cfg = Path.home() / ".config" / "imgfactory"
+    def __init__(self, config_key: str = "gui_workshop"): #vers 2
+        cfg = get_user_config_dir()
         cfg.mkdir(parents=True, exist_ok=True)
         self._path = cfg / f"{config_key}.json"
         self._data = dict(self.DEFAULTS)
         self._load()
 
-    def _load(self):
+    def _load(self): #vers 1
         try:
             if self._path.exists():
                 self._data.update(
@@ -239,683 +391,36 @@ class WorkshopSettings:
         except Exception:
             pass
 
-    def save(self):
+    def save(self): #vers 1
         try: self._path.write_text(json.dumps(self._data, indent=2))
         except Exception: pass
 
-    def get(self, key, default=None):
+    def get(self, key, default=None):  #vers 1
         return self._data.get(
             key, default if default is not None else self.DEFAULTS.get(key))
 
-    def set(self, key, value):
+    def set(self, key, value): #vers 1
         if key in self.DEFAULTS:
             self._data[key] = value
 
-    def add_recent(self, path: str):
+    def add_recent(self, path: str): #vers 1
         r = [p for p in self._data.get("recent_files", []) if p != str(path)]
         r.insert(0, str(path))
         self._data["recent_files"] = r[:self.MAX_RECENT]
         self.save()
 
-    def get_recent(self) -> list:
+    def get_recent(self) -> list: #vers 1
         return [p for p in self._data.get("recent_files", [])
                 if Path(p).exists()]
 
 
-# - OpenGL viewport
-class DFFViewport(QOpenGLWidget if OPENGL_AVAILABLE else QWidget):
-    """Hardware OpenGL viewport for DFF geometry."""
-
-    def __init__(self, parent=None): #vers 1
-        super().__init__(parent)
-        self.app_settings = None
-
-        self._vertices:  List  = []
-        self._normals:   List  = []
-        self._uvs:       List  = []
-        self._triangles: List  = []
-        self._materials: List  = []
-        self._prelit:    List  = []   # list of (r,g,b,a) 0-255
-        self._tex_ids:   Dict[str,int] = {}
-
-        # Camera
-        self._dist  = 10.0
-        self._yaw   = 45.0
-        self._pitch = 25.0
-        self._pan_x = 0.0
-        self._pan_y = 0.0
-
-        # Mouse
-        self._last_pos  = QPoint()
-        self._dragging  = False
-        self._drag_btn  = Qt.MouseButton.NoButton
-
-        # Render state
-        self._mode          = 'solid'
-        self._backface_cull = True
-        self._show_grid     = True
-        self._use_prelight  = False
-        self._assembly_mode = False
-        self._all_geoms     = []
-        self._show_lod      = False   # hide _vlo by default
-        self._hidden_frames = set()   # frames hidden via hierarchy tree
-
-        # Animation state
-        self._anim_enabled  = False   # master on/off
-        self._anim_timer    = None    # QTimer
-        self._anim_frame_angles = {}  # frame_name -> current angle (degrees)
-        self._anim_door_open    = {}  # frame_name -> bool (open/closed)
-        self._anim_speed        = 1.0 # multiplier
-        # Rotor/prop spin rates (degrees per tick at 30fps)
-        self._anim_rates = {
-            'moving_rotor':  720.0, 'moving_rotor2': 360.0,
-            'prop':          540.0, 'prop_front':    540.0,
-            'wheel':          90.0,  # rolling speed placeholder
-            'misc_a':        180.0,  'misc_b':        180.0,
-        }
-
-        # Vehicle paint preview colours (user can change via Light Setup or future colour picker)
-        self._paint1 = (0.80, 0.20, 0.20)  # primary   — default red
-        self._paint2 = (0.20, 0.20, 0.80)  # secondary — default blue
-        self._light_dir     = (1.0, 2.0, 1.5, 0.0)   # GL_POSITION homogeneous
-        self._ambient       = 0.30
-        self._diffuse       = 0.85
-
-        self.setMinimumSize(400, 300)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-
-    def _get_ui_color(self, key): #vers 2
-        try:
-            if self.app_settings and hasattr(self.app_settings, 'get_ui_color'):
-                return self.app_settings.get_ui_color(key)
-        except Exception:
-            pass
-        defaults = {
-            'viewport_bg': QColor(18, 20, 28),
-            'grid':        QColor(45, 50, 65),
-        }
-        return defaults.get(key, QColor(200, 200, 200))
-
-
-    # - OpenGL lifecycle
-    def initializeGL(self): #vers 1
-        if not OPENGL_AVAILABLE: return
-        bg = self._get_ui_color('viewport_bg')
-        glClearColor(bg.redF(), bg.greenF(), bg.blueF(), 1.0)
-        glEnable(GL_DEPTH_TEST)
-        glDepthFunc(GL_LEQUAL)
-        glEnable(GL_BLEND)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        glShadeModel(GL_SMOOTH)
-        glEnable(GL_NORMALIZE)
-        self._setup_lighting()
-
-    def _setup_lighting(self): #vers 1
-        glEnable(GL_LIGHTING)
-        glEnable(GL_LIGHT0)
-        glEnable(GL_COLOR_MATERIAL)
-        glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE)
-        glLightfv(GL_LIGHT0, GL_POSITION, self._light_dir)
-        glLightfv(GL_LIGHT0, GL_AMBIENT,  [self._ambient]*3 + [1.0])
-        glLightfv(GL_LIGHT0, GL_DIFFUSE,  [self._diffuse]*3 + [1.0])
-        glLightfv(GL_LIGHT0, GL_SPECULAR, [0.15, 0.15, 0.15, 1.0])
-
-    def resizeGL(self, w, h): #vers 1
-        if not OPENGL_AVAILABLE: return
-        glViewport(0, 0, w, h)
-        glMatrixMode(GL_PROJECTION); glLoadIdentity()
-        aspect = w / h if h > 0 else 1.0
-        gluPerspective(45.0, aspect, 0.01, 50000.0)
-        glMatrixMode(GL_MODELVIEW)
-
-    def paintGL(self): #vers 2
-        if not OPENGL_AVAILABLE: return
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-        glLoadIdentity()
-        glTranslatef(self._pan_x, self._pan_y, -self._dist)
-        glRotatef(self._pitch, 1, 0, 0)
-        glRotatef(self._yaw,   0, 1, 0)
-
-        # Grid drawn in OpenGL world space (Y-up) — before GTA rotation
-        if self._show_grid:
-            self._draw_grid()
-
-        if not self._vertices:
-            if self._show_grid: self._draw_axes()
-            return
-
-        # GTA Z-up/Y-forward → OpenGL Y-up/Z-forward (model only)
-        glPushMatrix()
-        glRotatef(-90, 1, 0, 0)
-        if self._show_grid: self._draw_axes()
-
-        if self._backface_cull:
-            glEnable(GL_CULL_FACE); glCullFace(GL_BACK)
-        else:
-            glDisable(GL_CULL_FACE)
-
-        glLightfv(GL_LIGHT0, GL_POSITION, self._light_dir)
-
-        if getattr(self,'_assembly_mode',False) and getattr(self,'_all_geoms',[]):
-            self._draw_assembly()
-        elif self._mode == 'wireframe': self._draw_wireframe()
-        elif self._mode == 'solid':     self._draw_solid()
-        elif self._mode == 'textured':  self._draw_textured()
-        glPopMatrix()
-
-
-    # - draw calls
-    def _draw_grid(self): #vers 1
-        glDisable(GL_LIGHTING)
-        gc = self._get_ui_color('grid')
-        glColor3f(gc.redF(), gc.greenF(), gc.blueF())
-        glLineWidth(1.0)
-        step  = max(0.5, self._dist / 20.0)
-        count = 20; half = count * step
-        glBegin(GL_LINES)
-        for i in range(-count, count + 1):
-            p = i * step
-            glVertex3f(p, 0, -half); glVertex3f(p, 0,  half)
-            glVertex3f(-half, 0, p); glVertex3f( half, 0, p)
-        glEnd()
-
-    def _draw_axes(self): #vers 1
-        glDisable(GL_LIGHTING); glLineWidth(2.0)
-        r = self._dist * 0.15
-        glBegin(GL_LINES)
-        glColor3f(1,0,0); glVertex3f(0,0,0); glVertex3f(r,0,0)
-        glColor3f(0,1,0); glVertex3f(0,0,0); glVertex3f(0,r,0)
-        glColor3f(0,0,1); glVertex3f(0,0,0); glVertex3f(0,0,r)
-        glEnd()
-
-    def _face_color(self, mat_id): #vers 5
-        """Return (r,g,b,a) 0-1 for a material including alpha for glass/transparency."""
-        mats = self._materials
-        if mats and 0 <= mat_id < len(mats):
-            mat = mats[mat_id]
-            c = mat.colour
-            r=getattr(c,'r',180); g=getattr(c,'g',180); b=getattr(c,'b',180); a=getattr(c,'a',255)
-            has_tex = bool(getattr(mat,'texture_name',''))
-            if r==0 and g==0 and b==0 and not has_tex:
-                return 0.55, 0.55, 0.55, 1.0
-            if g==255 and r<100 and b<50:  # primary paint slot
-                return self._paint1[0], self._paint1[1], self._paint1[2], a/255
-            if r==255 and g<50 and b>100:  # secondary paint slot
-                return self._paint2[0], self._paint2[1], self._paint2[2], a/255
-            return r/255, g/255, b/255, a/255
-        return 0.7, 0.7, 0.7, 1.0
-
-    def _emit_verts(self, v1, v2, v3, use_prelit=False, use_uv=False): #vers 1
-        verts = self._vertices; norms = self._normals
-        uvs   = self._uvs;      prelit = self._prelit
-        has_n = len(norms)  == len(verts)
-        has_u = len(uvs)    == len(verts) and use_uv
-        has_p = len(prelit) == len(verts) and use_prelit
-        for vi in (v1, v2, v3):
-            if vi >= len(verts): continue
-            if has_p:
-                p = prelit[vi]
-                glColor3f(p[0]/255, p[1]/255, p[2]/255)
-            if has_n:
-                n = norms[vi]; glNormal3f(n[0], n[1], n[2])
-            if has_u:
-                u = uvs[vi]; glTexCoord2f(u[0], 1.0 - u[1])
-            v = verts[vi]; glVertex3f(v[0], v[1], v[2])
-
-    def _draw_wireframe(self): #vers 1
-        glDisable(GL_LIGHTING)
-        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
-        glColor3f(0.65, 0.75, 1.0); glLineWidth(0.8)
-        glBegin(GL_TRIANGLES)
-        for v1,v2,v3,mid in self._triangles:
-            self._emit_verts(v1,v2,v3)
-        glEnd()
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
-
-    def _draw_solid(self): #vers 2
-        glEnable(GL_LIGHTING)
-        use_p = self._use_prelight and self._prelit
-        # Opaque first, then transparent (alpha < 1) for correct blending
-        opaque=[]; transparent=[]
-        for tri in self._triangles:
-            fc=self._face_color(tri[3])
-            (transparent if len(fc)>3 and fc[3]<0.99 else opaque).append((tri,fc))
-        glBegin(GL_TRIANGLES)
-        for (v1,v2,v3,mid),(r,g,b,*rest) in opaque:
-            if not use_p: glColor4f(r,g,b,1.0)
-            self._emit_verts(v1,v2,v3, use_prelit=use_p)
-        glEnd()
-        if transparent:
-            glEnable(GL_BLEND); glDepthMask(False)
-            glBegin(GL_TRIANGLES)
-            for (v1,v2,v3,mid),(r,g,b,a) in transparent:
-                if not use_p: glColor4f(r,g,b,a)
-                self._emit_verts(v1,v2,v3, use_prelit=use_p)
-            glEnd()
-            glDepthMask(True); glDisable(GL_BLEND)
-
-        # Wireframe overlay
-        glDisable(GL_LIGHTING)
-        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
-        glColor4f(0,0,0,0.18); glLineWidth(0.5)
-        glEnable(GL_POLYGON_OFFSET_LINE); glPolygonOffset(-1,-1)
-        glBegin(GL_TRIANGLES)
-        for v1,v2,v3,mid in self._triangles:
-            self._emit_verts(v1,v2,v3)
-        glEnd()
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
-        glDisable(GL_POLYGON_OFFSET_LINE)
-
-    def _draw_textured(self): #vers 2
-        glEnable(GL_LIGHTING); glEnable(GL_TEXTURE_2D)
-        # GL_MODULATE: final = texture_colour * gl_colour (enables paint tinting)
-        glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE)
-        use_p = self._use_prelight and self._prelit
-        mats  = self._materials
-
-        # Group triangles by (gl_tex_id, mat_colour) so we batch correctly
-        # Key: (gl_id, r, g, b) — same texture+colour batched together
-        batches: Dict[tuple,list] = {}
-        no_tex = []
-        for tri in self._triangles:
-            v1,v2,v3,mid = tri
-            tname = ''
-            if mats and 0 <= mid < len(mats):
-                tname = getattr(mats[mid],'texture_name','') or ''
-            gl_id = self._tex_ids.get(tname.lower(), 0)
-            if gl_id:
-                r,g,b,a = self._face_color(mid)
-                key = (gl_id, round(r,2), round(g,2), round(b,2), round(a,2))
-                batches.setdefault(key,[]).append(tri)
-            else:
-                no_tex.append(tri)
-
-        # Sort: opaque batches first, then transparent
-        opaque_b = {k:v for k,v in batches.items() if len(k)<5 or k[4]>=0.99}
-        transp_b = {k:v for k,v in batches.items() if len(k)>=5 and k[4]<0.99}
-        for batch_dict, use_blend in [(opaque_b,False),(transp_b,True)]:
-            if use_blend: glEnable(GL_BLEND); glDepthMask(False)
-            for key, tris in batch_dict.items():
-                gl_id=key[0]; r=key[1]; g=key[2]; b=key[3]
-                a = key[4] if len(key)>4 else 1.0
-                glBindTexture(GL_TEXTURE_2D, gl_id)
-                if not use_p: glColor4f(r, g, b, a)
-                glBegin(GL_TRIANGLES)
-                for v1,v2,v3,mid in tris:
-                    self._emit_verts(v1,v2,v3, use_prelit=use_p, use_uv=True)
-                glEnd()
-            if use_blend: glDepthMask(True); glDisable(GL_BLEND)
-
-        glBindTexture(GL_TEXTURE_2D, 0); glDisable(GL_TEXTURE_2D)
-        no_opaque=[t for t in no_tex if self._face_color(t[3])[3]>=0.99]
-        no_transp=[t for t in no_tex if self._face_color(t[3])[3]<0.99]
-        for tri_list, use_blend in [(no_opaque,False),(no_transp,True)]:
-            if use_blend: glEnable(GL_BLEND); glDepthMask(False)
-            for v1,v2,v3,mid in tri_list:
-                r,g,b,a = self._face_color(mid)
-                if not use_p: glColor4f(r,g,b,a)
-                glBegin(GL_TRIANGLES)
-                self._emit_verts(v1,v2,v3, use_prelit=use_p)
-                glEnd()
-            if use_blend: glDepthMask(True); glDisable(GL_BLEND)
-        glEnable(GL_TEXTURE_2D)
-
-
-    # - textures
-    def _upload_textures(self, textures: list): #vers 1
-        if not OPENGL_AVAILABLE: return
-        self.makeCurrent(); self.clear_textures()
-        for tex in textures:
-            name = tex.get('name','').lower()
-            rgba = tex.get('rgba_data', b'')
-            w    = tex.get('width', 0); h = tex.get('height', 0)
-            if not (name and rgba and w > 0 and h > 0): continue
-            gl_id = glGenTextures(1)
-            glBindTexture(GL_TEXTURE_2D, gl_id)
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR)
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT)
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT)
-            try:
-                glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,w,h,0,GL_RGBA,GL_UNSIGNED_BYTE,rgba)
-                glGenerateMipmap(GL_TEXTURE_2D)
-                self._tex_ids[name] = gl_id
-            except Exception as e:
-                print(f"[ModelViewer] Tex upload fail '{name}': {e}")
-                glDeleteTextures(1,[gl_id])
-        glBindTexture(GL_TEXTURE_2D, 0); self.doneCurrent()
-
-    def clear_textures(self): #vers 1
-        if OPENGL_AVAILABLE and self._tex_ids:
-            try: glDeleteTextures(len(self._tex_ids), list(self._tex_ids.values()))
-            except Exception: pass
-        self._tex_ids.clear()
-
-
-    # - public API
-    def load_geometry(self, geometry, materials: list): #vers 1
-        self._vertices  = [(v.x,v.y,v.z) for v in geometry.vertices]
-        self._normals   = [(n.x,n.y,n.z) for n in geometry.normals] if geometry.normals else []
-        self._uvs       = [(u.u,u.v) for u in geometry.uv_layers[0]] if geometry.uv_layers else []
-        self._triangles = [(t.v1,t.v2,t.v3,t.material_id) for t in geometry.triangles]
-        self._materials = materials
-        self._prelit    = [(c.r,c.g,c.b,c.a) for c in getattr(geometry,'colors',[])] if geometry.colors else []
-        self._auto_fit(); self.update()
-
-    def _auto_fit(self): #vers 1
-        if not self._vertices: return
-        xs=[v[0] for v in self._vertices]; ys=[v[1] for v in self._vertices]; zs=[v[2] for v in self._vertices]
-        diag = math.sqrt((max(xs)-min(xs))**2+(max(ys)-min(ys))**2+(max(zs)-min(zs))**2)
-        self._dist  = max(diag*1.5, 2.0)
-        self._pan_x = -(max(xs)+min(xs))/2
-        self._pan_y = -(max(ys)+min(ys))/2
-        self.update()
-
-    def set_render_mode(self, mode: str): #vers 1
-        self._mode = mode; self.update()
-
-    def set_backface_cull(self, v: bool): #vers 1
-        self._backface_cull = v; self.update()
-
-    def set_show_grid(self, v: bool): #vers 1
-        self._show_grid = v; self.update()
-
-    def load_all_geometries(self, geometries, materials_list, frames, atomics, damaged=False): #vers 2
-        # Load all geometries with world transforms. damaged=True shows _dam parts.
-        self._all_geoms = []
-        fname = {i: (f.name.lower() if f.name else '') for i,f in enumerate(frames)}
-        for i, geom in enumerate(geometries):
-            atomic = next((a for a in atomics if a.geometry_index == i), None)
-            if not atomic: continue
-            fi = atomic.frame_index
-            name = fname.get(fi, '')
-            is_dam = name.endswith('_dam') or name.endswith('_hi_dam')
-            is_ok  = name.endswith('_ok')  or name.endswith('_hi_ok')
-            is_lod = name.endswith('_vlo') or name.endswith('_lo') or name=='chassis_vlo'
-            if name in getattr(self,'_hidden_frames',set()): continue
-            if is_dam and not damaged: continue
-            if is_ok  and damaged: continue
-            if is_lod and not getattr(self,'_show_lod',False): continue
-            rot, tx, ty, tz = self._calc_world_matrix(frames, fi)
-            verts = [(rot[0]*v.x+rot[1]*v.y+rot[2]*v.z+tx,
-                      rot[3]*v.x+rot[4]*v.y+rot[5]*v.z+ty,
-                      rot[6]*v.x+rot[7]*v.y+rot[8]*v.z+tz) for v in geom.vertices]
-            norms = [(rot[0]*n.x+rot[1]*n.y+rot[2]*n.z,
-                      rot[3]*n.x+rot[4]*n.y+rot[5]*n.z,
-                      rot[6]*n.x+rot[7]*n.y+rot[8]*n.z) for n in geom.normals] if geom.normals else []
-            uvs   = [(u.u,u.v) for u in geom.uv_layers[0]] if geom.uv_layers else []
-            tris  = [(t.v1,t.v2,t.v3,t.material_id) for t in geom.triangles]
-            prelit= [(c.r,c.g,c.b,c.a) for c in geom.colors] if geom.colors else []
-            self._all_geoms.append((verts,norms,uvs,tris,geom.materials,prelit))
-            # Wheel instancing: place at all wheel dummy frames
-            # Use wheels.DFF geometry if available, else repeat vehicle's own wheel mesh
-            if 'wheel' in name and not is_dam and not is_ok and 'dummy' not in name:
-                wheel_data = self._get_wheel_geom_data()
-                for fi2, fn2 in fname.items():
-                    if fi2 == fi: continue
-                    if 'wheel' in fn2 and 'dummy' in fn2:
-                        r2,tx2,ty2,tz2 = self._calc_world_matrix(frames, fi2)
-                        is_left = fn2.startswith('wheel_l')
-                        # Apply steering angle to front wheels
-                        is_front = 'lf' in fn2 or 'rf' in fn2
-                        if is_front:
-                            angle = getattr(self,'_wheel_heading',0.0)
-                            if angle:
-                                ca=math.cos(math.radians(angle)); sa=math.sin(math.radians(angle))
-                                # Rotate around Z axis (GTA Z-up)
-                                steer=[ca,-sa,0, sa,ca,0, 0,0,1]
-                                r2=[r2[0]*steer[0]+r2[1]*steer[3]+r2[2]*steer[6],
-                                    r2[0]*steer[1]+r2[1]*steer[4]+r2[2]*steer[7],
-                                    r2[0]*steer[2]+r2[1]*steer[5]+r2[2]*steer[8],
-                                    r2[3]*steer[0]+r2[4]*steer[3]+r2[5]*steer[6],
-                                    r2[3]*steer[1]+r2[4]*steer[4]+r2[5]*steer[7],
-                                    r2[3]*steer[2]+r2[4]*steer[5]+r2[5]*steer[8],
-                                    r2[6]*steer[0]+r2[7]*steer[3]+r2[8]*steer[6],
-                                    r2[6]*steer[1]+r2[7]*steer[4]+r2[8]*steer[7],
-                                    r2[6]*steer[2]+r2[7]*steer[5]+r2[8]*steer[8]]
-                        if wheel_data:
-                            wv,wn,wu,wt,wm,wp = wheel_data
-                            # Transform wheel.DFF verts to this dummy's world position
-                            v2=[(r2[0]*vx+r2[1]*vy+r2[2]*vz+tx2,
-                                 r2[3]*vx+r2[4]*vy+r2[5]*vz+ty2,
-                                 r2[6]*vx+r2[7]*vy+r2[8]*vz+tz2) for vx,vy,vz in wv]
-                            if is_left: v2=[(-vx,vy,vz) for vx,vy,vz in v2]
-                            self._all_geoms.append((v2,wn,wu,wt,wm,wp))
-                        else:
-                            # Fallback: repeat vehicle's own wheel mesh
-                            v2=[(r2[0]*v.x+r2[1]*v.y+r2[2]*v.z+tx2,
-                                 r2[3]*v.x+r2[4]*v.y+r2[5]*v.z+ty2,
-                                 r2[6]*v.x+r2[7]*v.y+r2[8]*v.z+tz2) for v in geom.vertices]
-                            if is_left: v2=[(-vx,vy,vz) for vx,vy,vz in v2]
-                            self._all_geoms.append((v2,norms,uvs,tris,geom.materials,prelit))
-        # VC/LC: place wheels.DFF at dummies even when no wheel atomic present
-        placed_wheels=any('wheel' in fname.get(a.frame_index,'') and 'dummy' not in fname.get(a.frame_index,'') for a in atomics)
-        if not placed_wheels:
-            wheel_data=self._get_wheel_geom_data()
-            if wheel_data:
-                for fi2,fn2 in fname.items():
-                    if 'wheel' in fn2 and 'dummy' in fn2:
-                        r2,tx2,ty2,tz2=self._calc_world_matrix(frames,fi2)
-                        wv,wn,wu,wt,wm,wp=wheel_data
-                        v2=[(r2[0]*vx+r2[1]*vy+r2[2]*vz+tx2,r2[3]*vx+r2[4]*vy+r2[5]*vz+ty2,r2[6]*vx+r2[7]*vy+r2[8]*vz+tz2) for vx,vy,vz in wv]
-                        if fn2.startswith('wheel_l'): v2=[(-vx,vy,vz) for vx,vy,vz in v2]
-                        self._all_geoms.append((v2,wn,wu,wt,wm,wp))
-        all_pts=[p for g in self._all_geoms for p in g[0]]
-        if all_pts:
-            xs=[p[0] for p in all_pts]; ys=[p[1] for p in all_pts]
-            diag=math.sqrt(max(1,(max(xs)-min(xs))**2+(max(ys)-min(ys))**2))
-            self._dist=max(diag*2.0,2.0)
-            self._pan_x=-(max(xs)+min(xs))/2; self._pan_y=-(max(ys)+min(ys))/2
-        self.update()
-
-    def _calc_world_matrix(self, frames, frame_idx): #vers 2
-        """Compute cumulative world matrix for a frame chain.
-        Applies animation rotations for rotor/door/prop frames."""
-        r=[1,0,0,0,1,0,0,0,1]; tx=ty=tz=0.0
-        visited=set(); idx=frame_idx; chain=[]
-        while 0<=idx<len(frames) and idx not in visited:
-            visited.add(idx); chain.append((idx,frames[idx])); idx=frames[idx].parent_index
-        for fi,frame in reversed(chain):
-            fr=frame.rotation; fp=frame.position
-            # Apply animation rotation if any
-            if self._anim_enabled:
-                anim_r = self._get_anim_rotation(frame.name or '')
-                if anim_r:
-                    fr=[fr[0]*anim_r[0]+fr[1]*anim_r[3]+fr[2]*anim_r[6],
-                        fr[0]*anim_r[1]+fr[1]*anim_r[4]+fr[2]*anim_r[7],
-                        fr[0]*anim_r[2]+fr[1]*anim_r[5]+fr[2]*anim_r[8],
-                        fr[3]*anim_r[0]+fr[4]*anim_r[3]+fr[5]*anim_r[6],
-                        fr[3]*anim_r[1]+fr[4]*anim_r[4]+fr[5]*anim_r[7],
-                        fr[3]*anim_r[2]+fr[4]*anim_r[5]+fr[5]*anim_r[8],
-                        fr[6]*anim_r[0]+fr[7]*anim_r[3]+fr[8]*anim_r[6],
-                        fr[6]*anim_r[1]+fr[7]*anim_r[4]+fr[8]*anim_r[7],
-                        fr[6]*anim_r[2]+fr[7]*anim_r[5]+fr[8]*anim_r[8]]
-            nr=[r[0]*fr[0]+r[1]*fr[3]+r[2]*fr[6],r[0]*fr[1]+r[1]*fr[4]+r[2]*fr[7],r[0]*fr[2]+r[1]*fr[5]+r[2]*fr[8],
-                r[3]*fr[0]+r[4]*fr[3]+r[5]*fr[6],r[3]*fr[1]+r[4]*fr[4]+r[5]*fr[7],r[3]*fr[2]+r[4]*fr[5]+r[5]*fr[8],
-                r[6]*fr[0]+r[7]*fr[3]+r[8]*fr[6],r[6]*fr[1]+r[7]*fr[4]+r[8]*fr[7],r[6]*fr[2]+r[7]*fr[5]+r[8]*fr[8]]
-            ntx=r[0]*fp.x+r[1]*fp.y+r[2]*fp.z+tx; nty=r[3]*fp.x+r[4]*fp.y+r[5]*fp.z+ty
-            ntz=r[6]*fp.x+r[7]*fp.y+r[8]*fp.z+tz; r,tx,ty,tz=nr,ntx,nty,ntz
-        return r,tx,ty,tz
-
-
-    # ── Animation ─────────────────────────────────────────────────────────
-
-    def set_animation(self, enabled: bool): #vers 1
-        self._anim_enabled = enabled
-        if enabled:
-            if self._anim_timer is None:
-                from PyQt6.QtCore import QTimer
-                self._anim_timer = QTimer(self)
-                self._anim_timer.timeout.connect(self._anim_tick)
-            self._anim_timer.start(33)  # ~30fps
-        else:
-            if self._anim_timer: self._anim_timer.stop()
-            self.update()
-
-    def _anim_tick(self): #vers 1
-        if not self._anim_enabled or not self._assembly_mode: return
-        changed = False
-        for fname, rate in self._anim_rates.items():
-            cur = self._anim_frame_angles.get(fname, 0.0)
-            self._anim_frame_angles[fname] = (cur + rate * self._anim_speed / 30.0) % 360.0
-            changed = True
-        if changed: self._rebuild_anim_geoms()
-
-    def _rebuild_anim_geoms(self): #vers 1
-        m = getattr(self, '_dff_model', None)
-        if not m: return
-        self.load_all_geometries(
-            m.geometries, [g.materials for g in m.geometries],
-            m.frames, m.atomics,
-            damaged=getattr(self, '_damaged', False))
-
-    def toggle_door(self, door_name: str): #vers 1
-        cur = self._anim_door_open.get(door_name, False)
-        self._anim_door_open[door_name] = not cur
-        self._rebuild_anim_geoms()
-
-    def _get_anim_rotation(self, frame_name: str): #vers 1
-        name = frame_name.lower()
-        # Rotor / prop — spin around Y axis (GTA Y-forward, rotor spins around vehicle up)
-        for key in ('moving_rotor', 'moving_rotor2', 'prop', 'misc_a', 'misc_b'):
-            if key in name:
-                angle = self._anim_frame_angles.get(key, 0.0)
-                ca=math.cos(math.radians(angle)); sa=math.sin(math.radians(angle))
-                return [ca,-sa,0, sa,ca,0, 0,0,1]  # rotate around Z
-        # Door / bonnet / boot — rotate around Y axis, open to ~70 degrees
-        for key in ('door_lf','door_rf','door_lr','door_rr','bonnet','boot'):
-            if key in name:
-                is_open = self._anim_door_open.get(name, False)
-                angle = 70.0 if is_open else 0.0
-                ca=math.cos(math.radians(angle)); sa=math.sin(math.radians(angle))
-                return [1,0,0, 0,ca,-sa, 0,sa,ca]  # rotate around X
-        return None  # no animation for this frame
-
-    def set_animation_speed(self, speed: float): #vers 1
-        self._anim_speed = max(0.1, speed)
-
-    def set_wheel_heading(self, angle_deg: float): #vers 1
-
-        self._wheel_heading = angle_deg
-        if getattr(self,'_assembly_mode',False) and getattr(self,'_dff_model',None):
-            m=self._dff_model
-            self.load_all_geometries(m.geometries,[g.materials for g in m.geometries],
-                                     m.frames,m.atomics,getattr(self,'_damaged',False))
-
-    def load_wheels_dff(self, path: str, wheel_type: str = 'wheel_saloon_l0'): #vers 1
-
-        try:
-            from apps.methods.dff_parser import load_dff
-            self._wheels_model = load_dff(path)
-            self._wheel_type   = wheel_type
-        except Exception as e:
-            print(f'[wheels.DFF] {e}')
-
-    def _get_wheel_geom_data(self): #vers 1
-        """Return geometry tuple for current wheel type from wheels.DFF."""
-        m = getattr(self,'_wheels_model',None)
-        if not m: return None
-        wtype = getattr(self,'_wheel_type','wheel_saloon_l0').lower()
-        for a in m.atomics:
-            fi = a.frame_index
-            fname = (m.frames[fi].name or '').lower() if fi<len(m.frames) else ''
-            if fname == wtype:
-                g = m.geometries[a.geometry_index]
-                return (
-                    [(v.x,v.y,v.z) for v in g.vertices],
-                    [(n.x,n.y,n.z) for n in g.normals] if g.normals else [],
-                    [(u.u,u.v) for u in g.uv_layers[0]] if g.uv_layers else [],
-                    [(t.v1,t.v2,t.v3,t.material_id) for t in g.triangles],
-                    g.materials,
-                    [(c.r,c.g,c.b,c.a) for c in g.colors] if g.colors else []
-                )
-        return None
-
-    def set_assembly_mode(self, enabled: bool): #vers 1
-        self._assembly_mode = enabled; self.update()
-
-    def set_show_lod(self, enabled: bool): #vers 1
-        self._show_lod = enabled; self.update()
-
-    def _draw_assembly(self): #vers 1
-        """Draw all geometries at their world positions."""
-        if not OPENGL_AVAILABLE: return
-        for verts,norms,uvs,tris,mats,prelit in getattr(self,'_all_geoms',[]):
-            old_v,old_n,old_u,old_t,old_m,old_p = (
-                self._vertices,self._normals,self._uvs,
-                self._triangles,self._materials,self._prelit)
-            self._vertices=verts; self._normals=norms; self._uvs=uvs
-            self._triangles=tris; self._materials=mats; self._prelit=prelit
-            if   self._mode=='wireframe': self._draw_wireframe()
-            elif self._mode=='solid':     self._draw_solid()
-            elif self._mode=='textured':  self._draw_textured()
-            (self._vertices,self._normals,self._uvs,
-             self._triangles,self._materials,self._prelit) = (old_v,old_n,old_u,old_t,old_m,old_p)
-
-    def set_prelight(self, v: bool): #vers 1
-        self._use_prelight = v; self.update()
-
-    def set_light_dir(self, x, y, z): #vers 1
-        self._light_dir = (x, y, z, 0.0)
-        if OPENGL_AVAILABLE and self.isVisible():
-            self.makeCurrent()
-            glLightfv(GL_LIGHT0, GL_POSITION, self._light_dir)
-            self.doneCurrent()
-        self.update()
-
-    def set_ambient(self, v: float): #vers 1
-        self._ambient = v
-        if OPENGL_AVAILABLE and self.isVisible():
-            self.makeCurrent()
-            glLightfv(GL_LIGHT0, GL_AMBIENT, [v,v,v,1.0])
-            self.doneCurrent()
-        self.update()
-
-    def set_diffuse(self, v: float): #vers 1
-        self._diffuse = v
-        if OPENGL_AVAILABLE and self.isVisible():
-            self.makeCurrent()
-            glLightfv(GL_LIGHT0, GL_DIFFUSE, [v,v,v,1.0])
-            self.doneCurrent()
-        self.update()
-
-    def reset_camera(self): #vers 1
-        self._yaw=45.0; self._pitch=25.0; self._pan_x=0.0; self._pan_y=0.0
-        self._auto_fit()
-
-
-    # - mouse
-    def mousePressEvent(self, event): #vers 1
-        self._last_pos = event.pos(); self._dragging=True; self._drag_btn=event.button()
-
-    def mouseMoveEvent(self, event): #vers 1
-        if not self._dragging: return
-        dx = event.pos().x()-self._last_pos.x()
-        dy = event.pos().y()-self._last_pos.y()
-        if self._drag_btn == Qt.MouseButton.LeftButton:
-            self._yaw   += dx*0.5
-            self._pitch  = max(-89, min(89, self._pitch+dy*0.5))
-        elif self._drag_btn == Qt.MouseButton.MiddleButton:
-            s = self._dist/500.0
-            self._pan_x += dx*s; self._pan_y -= dy*s
-        self._last_pos = event.pos(); self.update()
-
-    def mouseReleaseEvent(self, event): #vers 1
-        self._dragging=False; self._drag_btn=Qt.MouseButton.NoButton
-
-    def wheelEvent(self, event): #vers 1
-        f = 0.88 if event.angleDelta().y()>0 else 1.13
-        self._dist = max(0.1, min(50000.0, self._dist*f)); self.update()
-
-
-#    _CornerOverlay
 class _CornerOverlay(QWidget):
     """Transparent overlay that draws accent-coloured resize triangles.
     Shared by all GUIWorkshop subclasses — do not modify.
     """
     SIZE = 20
 
-    def __init__(self, parent):
+    def __init__(self, parent): #vers 1
         super().__init__(parent)
         for attr in [Qt.WidgetAttribute.WA_TransparentForMouseEvents,
                      Qt.WidgetAttribute.WA_NoSystemBackground,
@@ -929,26 +434,12 @@ class _CornerOverlay(QWidget):
         self._update_mask()
 
 
-    def _get_ui_color(self, key): #vers 1
-        """Return theme-aware QColor. No hardcoded colors - everything via app_settings."""
-        from PyQt6.QtGui import QColor
-        try:
-            app_settings = getattr(self, 'app_settings', None) or \
-                getattr(getattr(self, 'main_window', None), 'app_settings', None)
-            if app_settings and hasattr(app_settings, 'get_ui_color'):
-                return app_settings.get_ui_color(key)
-        except Exception:
-            pass
-        pal = self.palette()
-        if key == 'viewport_bg':
-            return pal.color(pal.ColorRole.Base)
-        if key == 'viewport_text':
-            return pal.color(pal.ColorRole.PlaceholderText)
-        if key == 'border':
-            return pal.color(pal.ColorRole.Mid)
-        return pal.color(pal.ColorRole.WindowText)
+    def _get_ui_color(self, key): #vers 2
+        """Theme QColor via shared helper."""
+        from apps.methods.ui_color import get_ui_color
+        return get_ui_color(self, key)
 
-    def _update_mask(self):
+    def _update_mask(self): #vers 1
         from PyQt6.QtGui import QRegion
         s = self.SIZE; w, h = self.width(), self.height()
         region = QRegion()
@@ -961,18 +452,18 @@ class _CornerOverlay(QWidget):
             region = region.united(QRegion(QPolygon(pts)))
         self.setMask(region)
 
-    def update_state(self, hover_corner, app_settings):
+    def update_state(self, hover_corner, app_settings): #vers 1
         self._hover_corner = hover_corner
         self._app_settings = app_settings
         self.update()
 
-    def setGeometry(self, *a):
+    def setGeometry(self, *a): #vers 1
         super().setGeometry(*a); self._update_mask()
 
-    def resizeEvent(self, ev):
+    def resizeEvent(self, ev): #vers 1
         super().resizeEvent(ev); self._update_mask()
 
-    def paintEvent(self, ev):
+    def paintEvent(self, ev): #vers 1
         s = self.SIZE
         try:
             accent = QColor(
@@ -1004,7 +495,7 @@ class _ToolbarMixin:
 
     #    Toolbar creation
 
-    def _create_toolbar(self):
+    def _create_toolbar(self): #vers 3
         self.toolbar = QFrame()
         self.toolbar.setFrameStyle(QFrame.Shape.StyledPanel)
         self.toolbar.setFixedHeight(self.toolbarheight)
@@ -1013,23 +504,23 @@ class _ToolbarMixin:
         self.toolbar.setMouseTracking(True)
         self.titlebar = self.toolbar   # alias for drag detection
 
-        lo = QHBoxLayout(self.toolbar)
-        lo.setContentsMargins(5, 4, 5, 4)
-        lo.setSpacing(4)
+        toolbar = QHBoxLayout(self.toolbar)
+        toolbar.setContentsMargins(5, 4, 5, 4)
+        toolbar.setSpacing(4)
         ic = self._get_icon_color()
 
         # Helper: create a fixed-size icon button
-        def _ibtn(icon_fn, tip, slot):
-            b = QPushButton()
+        def _ibtn(icon_fn, tip, slot):  #vers 1
+            btn = QPushButton()
             try:
-                b.setIcon(getattr(SVGIconFactory, icon_fn)(20, ic))
-                b.setIconSize(QSize(20, 20))
+                btn.setIcon(getattr(SVGIconFactory, icon_fn)(20, ic))
+                btn.setIconSize(QSize(20, 20))
             except Exception:
                 pass
-            b.setFixedSize(35, 35)
-            b.setToolTip(tip)
-            b.clicked.connect(slot)
-            return b
+            btn.setFixedSize(35, 35)
+            btn.setToolTip(tip)
+            btn.clicked.connect(slot)
+            return btn
 
         #    Left: [Menu] [Settings]
         self.menu_btn = QPushButton("Menu")
@@ -1039,7 +530,7 @@ class _ToolbarMixin:
         self.menu_btn.setToolTip(
             "Show menu (dropdown or top bar — set in Settings)")
         self.menu_btn.clicked.connect(self._on_menu_btn_clicked)
-        lo.addWidget(self.menu_btn)
+        toolbar.addWidget(self.menu_btn)
 
         self.settings_btn = QPushButton()
         try:
@@ -1054,49 +545,46 @@ class _ToolbarMixin:
         self.settings_btn.setToolTip(
             "Workshop settings — Fonts, Display, Menu, About")
         self.settings_btn.clicked.connect(self._show_workshop_settings)
-        lo.addWidget(self.settings_btn)
+        toolbar.addWidget(self.settings_btn)
 
-        lo.addSpacing(4)
-        lo.addStretch()
+        toolbar.addSpacing(4)
+        toolbar.addStretch()
 
         #    Centre: title
         self.title_label = QLabel(self.App_name)
         self.title_label.setFont(self.title_font)
         self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title_label.setObjectName("title_label")
-        lo.addWidget(self.title_label)
-
-        lo.addStretch()
-        lo.addSpacing(4)
+        toolbar.addWidget(self.title_label)
+        toolbar.addStretch()
+        toolbar.addSpacing(4)
 
         #    Right: action buttons
-        self.open_btn   = _ibtn("open_icon",   "Open  Ctrl+O",  self._open_file)
-        self.save_btn   = _ibtn("save_icon",   "Save  Ctrl+S",  self._save_file)
-        self.export_btn = _ibtn("export_icon", "Export",        self._export_file)
-        self.import_btn = _ibtn("import_icon", "Import",        self._import_file)
-        for b in (self.open_btn, self.save_btn,
+        self.open_btn = _ibtn("open_icon", "Open Ctrl+O", self._open_file) #TODO does not always work when switching tabs, should load the needed type for other tabs.
+        self.save_btn = _ibtn("save_icon", "Save Ctrl+S", self._save_file)
+        self.export_btn = _ibtn("export_icon", "Export", self._export_file)
+        self.import_btn = _ibtn("import_icon", "Import", self._import_file)
+        for btn in (self.open_btn, self.save_btn,
                   self.export_btn, self.import_btn):
-            lo.addWidget(b)
+            toolbar.addWidget(btn)
 
-        lo.addSpacing(6)
+        toolbar.addSpacing(6)
 
-        self.undo_btn = _ibtn("undo_icon", "Undo  Ctrl+Z", self._undo)
-        lo.addWidget(self.undo_btn)
-
-        lo.addSpacing(4)
+        self.undo_btn = _ibtn("undo_icon", "Undo Ctrl+Z", self._undo)
+        toolbar.addWidget(self.undo_btn)
+        toolbar.addSpacing(4)
 
         # [ℹ] Info — About this workshop
         self.info_btn = _ibtn("info_icon", "About / Info", self._show_about)
-        lo.addWidget(self.info_btn)
+        toolbar.addWidget(self.info_btn)
 
         # [⚙] Cog — Global AppSettings theme dialog
         self.properties_btn = _ibtn(
             "properties_icon",
             "Global Theme Settings  (AppSettings)",
             self._launch_theme_settings)
-        lo.addWidget(self.properties_btn)
-
-        lo.addSpacing(4)
+        toolbar.addWidget(self.properties_btn)
+        toolbar.addSpacing(4)
 
         # [_] [⬜] [✕] — Window controls (standalone only)
         if self.standalone_mode:
@@ -1106,14 +594,14 @@ class _ToolbarMixin:
                                       self._toggle_maximize)
             self.close_btn    = _ibtn("close_icon",    "Close",
                                       self.close)
-            for b in (self.minimize_btn, self.maximize_btn, self.close_btn):
-                lo.addWidget(b)
+            for btn in (self.minimize_btn, self.maximize_btn, self.close_btn):
+                toolbar.addWidget(btn)
         else:
             self.dock_btn = QPushButton("D")
             self.dock_btn.setFixedSize(35, 35)
             self.dock_btn.setToolTip("Dock / Undock")
             self.dock_btn.clicked.connect(self.toggle_dock_mode)
-            lo.addWidget(self.dock_btn)
+            toolbar.addWidget(self.dock_btn)
 
         return self.toolbar
 
@@ -1130,19 +618,319 @@ class _ToolbarMixin:
                 damaged=damaged)
         self._geom_list.setEnabled(not enabled)
 
-    def _toggle_damage_mode(self, enabled: bool): #vers 1
+    def _toggle_damage_mode(self, enabled: bool): #vers 2
         self._damage_mode = enabled
-        if getattr(self,'_assemble_btn',None) and self._assemble_btn.isChecked():
-            self._toggle_assembly_mode(True)
+        m = getattr(self, '_dff_model', None)
+        if m and m.frames and m.atomics:
+            self.viewport.load_all_geometries(
+                m.geometries, [g.materials for g in m.geometries],
+                m.frames, m.atomics, damaged=enabled)
+            self.viewport.update()
 
     def _toggle_lod_mode(self, enabled: bool): #vers 1
         self.viewport.set_show_lod(enabled)
         if getattr(self,'_assemble_btn',None) and self._assemble_btn.isChecked():
             self._toggle_assembly_mode(True)
 
+    def _toggle_animation(self, enabled: bool): #vers 2
+        """Toggle door open/close animation cycle."""
+        vp = self.viewport
+        if enabled:
+            if not hasattr(self, '_anim_timer') or not self._anim_timer:
+                self._anim_timer = QTimer(self)  # parent=self → auto-stopped on delete
+            self._anim_angle = 0.0
+            speed = getattr(self, '_anim_speed', 1.0)
+            def _step():  #vers 1
+                try:
+                    self._anim_angle = (self._anim_angle + speed * 2.0) % 180.0
+                    vp._door_angles = getattr(vp, '_door_angles', {})
+                    for dname in getattr(self, '_door_open', set()):
+                        vp._door_angles[dname] = self._anim_angle if self._anim_angle < 90 else 180 - self._anim_angle
+                    vp.update()
+                except RuntimeError:
+                    if hasattr(self, '_anim_timer') and self._anim_timer:
+                        self._anim_timer.stop()
+            self._anim_timer.timeout.connect(_step)
+            self._anim_timer.start(33)
+        else:
+            if hasattr(self, '_anim_timer') and self._anim_timer:
+                self._anim_timer.stop()
+            vp.update()
+
+    def _set_anim_speed(self, value: int): #vers 1
+        """Set animation speed from slider."""
+        self._anim_speed = value / 10.0
+
+    def _toggle_door(self, name: str, open: bool): #vers 1
+        """Track which doors are toggled open."""
+        self._door_open = getattr(self, '_door_open', set())
+        if open: self._door_open.add(name)
+        else:    self._door_open.discard(name)
+        self.viewport.update()
+
+    def _set_wheel_steer(self, angle: int): #vers 1
+        """Set front wheel steering angle in viewport."""
+        if hasattr(self.viewport, 'set_wheel_heading'):
+            self.viewport.set_wheel_heading(angle)
+        else:
+            self.viewport._wheel_steer = angle
+            self.viewport.update()
+
+    def _cycle_carcol(self): #vers 3
+        """Cycle through carcols.dat pairs for the current vehicle. Asks for file if not found."""
+        stem = os.path.splitext(os.path.basename(
+            (self._current_dff_path or '')))[0].lower()
+        if not stem: return
+        game_root = self._get_game_root()
+        # Try cached carcols path first
+        mw = getattr(self, 'main_window', None)
+        carcols_path = getattr(mw, 'vehicle_data_paths', {}).get('carcols', '')
+        if not carcols_path:
+            # Try standard locations
+            for sub in ('data/carcols.dat','DATA/CARCOLS.DAT','data/CARCOLS.DAT'):
+                p = os.path.join(game_root, sub) if game_root else ''
+                if p and os.path.isfile(p):
+                    carcols_path = p; break
+        if not carcols_path:
+            # Ask user
+            carcols_path, _ = QFileDialog.getOpenFileName(
+                self, "Open carcols.dat", game_root or '',
+                "Carcols (carcols.dat CARCOLS.DAT);;All Files (*)")
+            if not carcols_path: return
+            # Cache it
+            if mw:
+                if not hasattr(mw, 'vehicle_data_paths'):
+                    mw.vehicle_data_paths = {}
+                mw.vehicle_data_paths['carcols'] = carcols_path
+        try:
+            from apps.methods.carcols_parser import parse_carcols
+            data = parse_carcols(carcols_path)
+            pairs = data.get_colours(stem)
+            if not pairs:
+                self._set_status(f"No carcols entry for '{stem}'")
+                return
+            idx = getattr(self, '_carcol_idx', -1) + 1
+            if idx >= len(pairs): idx = 0
+            self._carcol_idx = idx
+            p1, p2 = pairs[idx]
+            self._set_paint_pair(p1, p2)
+            if hasattr(self, '_carcol_btn'):
+                self._carcol_btn.setToolTip(
+                    f"Pair {idx+1}/{len(pairs)} — "
+                    f"Pri: rgb({int(p1[0]*255)},{int(p1[1]*255)},{int(p1[2]*255)}) "
+                    f"Sec: rgb({int(p2[0]*255)},{int(p2[1]*255)},{int(p2[2]*255)})")
+            self._set_status(f"Carcol {idx+1}/{len(pairs)} for {stem}")
+        except Exception as e:
+            self._set_status(f'Carcol error: {e}')
+
+    def _toggle_com_indicator(self): #vers 1
+        """Toggle Centre of Mass indicator in viewport."""
+        show = not getattr(self, '_show_com', False)
+        self._show_com = show
+        # Read CoM from handling if available
+        if show:
+            try:
+                m = getattr(self, '_dff_model', None)
+                stem = os.path.splitext(os.path.basename((self._current_dff_path or '')))[0].lower()
+                if hasattr(self,'_tab_handling') and self._tab_handling._parser:
+                    entry = next((e for e in self._tab_handling._parser.entries
+                                  if e.name.lower()==stem), None)
+                    if entry and len(entry.values) > 7:
+                        cx,cy,cz = float(entry.values[4]),float(entry.values[5]),float(entry.values[6])
+                        self.viewport._com_pos = (cx,cy,cz)
+                        self._set_status(f'CoM: ({cx:.2f}, {cy:.2f}, {cz:.2f})')
+            except Exception:
+                pass
+        else:
+            self.viewport._com_pos = None
+        self.viewport.update()
+
+    def _toggle_dummy_overlay(self): #vers 1
+        """Toggle dummy frame position markers in viewport."""
+        self.viewport._show_dummies = not getattr(self.viewport, '_show_dummies', False)
+        self.viewport.update()
+
+    def _toggle_suspension_vis(self): #vers 1
+        """Toggle suspension travel range visualisation."""
+        self.viewport._show_suspension = not getattr(self.viewport, '_show_suspension', False)
+        self.viewport.update()
+
+    def _toggle_seat_overlay(self): #vers 1
+        """Toggle seat position markers."""
+        self.viewport._show_seats = not getattr(self.viewport, '_show_seats', False)
+        self.viewport.update()
+
+    def _toggle_bounds(self): #vers 1
+        """Toggle bounding box display."""
+        self.viewport._show_bounds = not getattr(self.viewport, '_show_bounds', False)
+        self.viewport.update()
+
+    def _export_dff(self): #vers 1
+        """Export current DFF geometry (stub — routes to model workshop)."""
+        self._set_status("Export: use Model Workshop for DFF export")
+
+    def _parse_sa_vehicles_ide(self, path: str): #vers 5
+        """Parse vehicles.ide/default.ide for wheel scales - handles GTA3, VC and SA."""
+        self._sa_vehicle_data = {}
+        try:
+            mw = getattr(self, 'main_window', None)
+            ide_db = getattr(mw, 'ide_db', None) if mw else None
+            raw = getattr(ide_db, '_game', None) or getattr(ide_db, 'game', None)
+            game_ver = str(raw).lower().split('.')[-1] if raw else 'vc'
+            # Detect from filename: vehicles.ide = SA (VC uses default.ide)
+            fname_lower = os.path.basename(path).lower()
+            if fname_lower == 'vehicles.ide' and game_ver in ('vc', 'gta3'):
+                game_ver = 'sa'
+            elif fname_lower == 'default.ide' and game_ver == 'sa':
+                game_ver = 'vc'  # SA doesn't use default.ide
+            print(f'[IDE] parse: {fname_lower} game_ver={game_ver} raw={raw}')
+
+            # GTA3 wheelModelId -> wheel name (IDs 160-166)
+            GTA3_WHEEL_ID = {
+                160: 'wheel_sport',    161: 'wheel_saloon',
+                162: 'wheel_lightvan', 163: 'wheel_classic',
+                164: 'wheel_alloy',    165: 'wheel_lighttruck',
+                166: 'wheel_smallcar',
+            }
+            # VC wheelModelId -> wheel name (IDs 237-256)
+            VC_WHEEL_ID = {
+                237: 'wheel_rim',        238: 'wheel_offroad',
+                239: 'wheel_truck',      250: 'wheel_sport',
+                251: 'wheel_saloon',     252: 'wheel_lightvan',
+                253: 'wheel_classic',    254: 'wheel_alloy',
+                255: 'wheel_lighttruck', 256: 'wheel_smallcar',
+            }
+            WHEEL_ID_MAP = GTA3_WHEEL_ID if game_ver == 'gta3' else VC_WHEEL_ID
+
+            # Field positions:
+            # GTA3: id,model,txd,type,handlingId,gameName,class,freq,level,compRules,wheelId,wheelScale
+            #        0   1    2   3    4           5        6     7    8     9         10      11
+            # VC:   id,model,txd,type,handlingId,gameName,animFile,class,freq,level,compRules,wheelId,wheelScale
+            #        0   1    2   3    4           5        6        7     8    9     10        11      12
+            # SA:   id,model,txd,type,handlingId,gameName,animFile,class,freq,level,compRules,wheelId,frontScale,rearScale
+            #        0   1    2   3    4           5        6        7     8    9     10        11      12         13
+            if game_ver == 'gta3':
+                scale_idx = 11; class_idx = 6; type_idx = 3; wheel_id_idx = 10
+            else:  # vc and sa same layout
+                scale_idx = 12; class_idx = 7; type_idx = 3; wheel_id_idx = 11
+
+            SA_CLASS_WHEEL = {
+                'richfamily':'wheel_saloon', 'executive':'wheel_saloon',
+                'normal':'wheel_saloon',     'poorfamily':'wheel_saloon',
+                'worker':'wheel_truck',      'ignore':'wheel_truck',
+                'big':'wheel_lighttruck',    'taxi':'wheel_saloon',
+                'offroad':'wheel_offroad',   'sport':'wheel_sport',
+                'lightvan':'wheel_lightvan', 'van':'wheel_lightvan',
+                'lighttruck':'wheel_lighttruck', 'classic':'wheel_classic',
+                'bicycle':'wheel_rim',       'bike':'wheel_rim',
+            }
+
+            with open(path, 'r', errors='ignore') as f:
+                in_cars = False
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#') or line.startswith(';'):
+                        continue
+                    if line.lower() == 'cars':
+                        in_cars = True; continue
+                    if line.lower() == 'end':
+                        in_cars = False; continue
+                    if not in_cars: continue
+                    parts = [p.strip() for p in line.split(',')]
+                    if len(parts) < scale_idx + 1: continue
+                    try:
+                        model      = parts[1].strip().lower()
+                        veh_type   = parts[type_idx].strip().lower() if len(parts) > type_idx else ''
+                        veh_class  = parts[class_idx].strip().lower() if len(parts) > class_idx else ''
+                        front_scale = float(parts[scale_idx])
+                        rear_scale  = float(parts[scale_idx+1]) if (
+                            game_ver == 'sa' and len(parts) > scale_idx+1) else front_scale
+
+                        # Wheel type from numeric ID first
+                        wheel_model = 'wheel_saloon'
+                        if len(parts) > wheel_id_idx:
+                            try:
+                                wid = int(parts[wheel_id_idx])
+                                wheel_model = WHEEL_ID_MAP.get(wid, '')
+                            except ValueError:
+                                pass
+                        # Fall back to class if no ID match
+                        if not wheel_model:
+                            if veh_type in ('bike','mtruck') or 'bike' in veh_type:
+                                wheel_model = 'wheel_rim'
+                            elif 'van' in veh_type or veh_type == 'truck':
+                                wheel_model = 'wheel_lightvan'
+                            else:
+                                wheel_model = SA_CLASS_WHEEL.get(veh_class, 'wheel_saloon')
+
+                        self._sa_vehicle_data[model] = {
+                            'front_scale': front_scale,
+                            'rear_scale':  rear_scale,
+                            'wheel_model': wheel_model,
+                        }
+                    except (ValueError, IndexError):
+                        continue
+            self._set_status(f"IDE ({game_ver}): {len(self._sa_vehicle_data)} vehicles")
+        except Exception as e:
+            self._set_status(f"IDE parse error: {e}")
+    def _toggle_show_wheels(self, enabled: bool): #vers 2
+        """Load wheels.DFF + wheels.txd if needed and trigger re-assembly."""
+        vp = self.viewport
+        vp._show_wheels = enabled
+        if enabled:
+            game_root = self._find_game_root()
+            wheels_path = getattr(vp, '_wheels_model_path', '')
+            # Find wheels.DFF
+            if not wheels_path and game_root:
+                import os as _os
+                for p in [
+                    _os.path.join(game_root,'models','generic','wheels.DFF'),
+                    _os.path.join(game_root,'models','generic','wheels.dff'),
+                    _os.path.join(game_root,'models','Generic','wheels.DFF'),
+                    _os.path.join(game_root,'models','Generic','wheels.dff'),
+                ]:
+                    if _os.path.isfile(p):
+                        wheels_path = p; break
+            if wheels_path and not getattr(vp, '_wheels_model', None):
+                vp.load_wheels_dff(wheels_path)
+            # Log what wheel type will be used
+            wheel_data = vp._get_wheel_geom_data()
+            if wheel_data:
+                wm = wheel_data[4] if len(wheel_data) > 4 else []
+                needed = [getattr(m,'texture_name','') for m in (wm or []) if getattr(m,'texture_name','')]
+                self._set_status(f'Wheels: {vp._wheel_type} | textures: {", ".join(needed[:4])}')
+            # Find and load wheels.txd (SA) or generic.txd contains wheel textures (VC/GTA3)
+            if game_root:
+                import os as _os
+                # VC/GTA3/LC: wheel textures are in misc.txd (+ generic.txd)
+                for fname in ['misc.txd','MISC.TXD','wheels.txd','wheels.TXD','generic.txd']:
+                    p = _os.path.join(game_root,'models', fname)
+                    if _os.path.isfile(p):
+                        try:
+                            from apps.methods.txd_parser import parse_txd
+                            with open(p,'rb') as f: data = f.read()
+                            textures = parse_txd(data)
+                            if textures:
+                                self._set_status(f'{fname}: {", ".join(t["name"] for t in textures[:6])}')
+                                from PyQt6.QtCore import QTimer
+                                QTimer.singleShot(150, lambda t=textures: vp._upload_textures(t, additive=True))
+                        except Exception as e:
+                            self._set_status(f'{fname} error: {e}')
+        # Rebuild assembly
+        m = getattr(self, '_dff_model', None)
+        if m and m.frames and m.atomics:
+            vp.load_all_geometries(
+                m.geometries, [g.materials for g in m.geometries],
+                m.frames, m.atomics,
+                damaged=getattr(self,'_damage_mode',False))
+        vp.update()
+        if enabled:
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(100, self._auto_load_shared_txds)
+
     def _update_paint_btns(self): #vers 1
         vp = self.viewport
-        def _css(rgb): return f'background-color:rgb({int(rgb[0]*255)},{int(rgb[1]*255)},{int(rgb[2]*255)});color:{"#000" if sum(rgb)>1.5 else "#fff"}'
+        def _css(rgb): return f'background-color:rgb({int(rgb[0]*255)},{int(rgb[1]*255)},{int(rgb[2]*255)});color:{"#000" if sum(rgb)>1.5 else "#fff"}'  #vers 1
         if hasattr(self,'_paint1_btn'): self._paint1_btn.setStyleSheet(_css(vp._paint1))
         if hasattr(self,'_paint2_btn'): self._paint2_btn.setStyleSheet(_css(vp._paint2))
 
@@ -1164,7 +952,7 @@ class _ToolbarMixin:
         self.viewport._paint1=p1; self.viewport._paint2=p2
         self._update_paint_btns(); self.viewport.update()
 
-    def _load_vehicle_meta(self, vehicle_name: str): #vers 1
+    def _load_vehicle_meta(self, vehicle_name: str): #vers 2
         """Load vehicles.ide (wheel type) and carcols colours for vehicle."""
         game_root = self._get_game_root()
         # vehicles.ide — wheel type
@@ -1176,8 +964,44 @@ class _ToolbarMixin:
                     wheel_dff = entry.wheel_dff_name()
                     self.viewport._wheel_type = wheel_dff
                     self._set_status(f'IDE: {vehicle_name} txd={entry.txd_name} wheel={wheel_dff}')
-            except Exception as e:
+            except Exception:
                 pass
+        # handling.cfg or SA vehicles.ide — front/rear tyre scales
+        try:
+            stem = vehicle_name.lower()
+            # SA: wheel scales are in vehicles.ide
+            sa_data = getattr(self, '_sa_vehicle_data', {})
+            self._set_status(f'Meta: sa_data={len(sa_data)} entries, stem={stem!r}, found={stem in sa_data}')
+            if sa_data and stem in sa_data:
+                self.viewport._wheel_front_scale = sa_data[stem]['front_scale']
+                self.viewport._wheel_rear_scale  = sa_data[stem]['rear_scale']
+                wheel_model = sa_data[stem].get('wheel_model', 'wheel_saloon_l0')
+                if not wheel_model.endswith('_l0'):
+                    wheel_model = wheel_model + '_l0'
+                self.viewport._wheel_type = wheel_model
+                self._set_status(f'SA IDE: wheel={wheel_model} front={sa_data[stem]["front_scale"]:.2f} rear={sa_data[stem]["rear_scale"]:.2f}')
+            else:
+                # VC/GTA3: wheel scales in handling.cfg fields 38/40
+                # SA handling.cfg only has 36 fields - wheel scale is in vehicles.ide
+                if hasattr(self, '_tab_handling') and hasattr(self._tab_handling, '_parser'):
+                    p = self._tab_handling._parser
+                    if p and p.entries:
+                        entry = next((e for e in p.entries if e.name.lower() == stem), None)
+                        if entry and len(entry.values) > 40:
+                            try:
+                                front_scale = float(entry.values[38])
+                                rear_scale  = float(entry.values[40])
+                                self.viewport._wheel_front_scale = front_scale
+                                self.viewport._wheel_rear_scale  = rear_scale
+                                self._set_status(f'Wheel scale: front={front_scale:.2f} rear={rear_scale:.2f}')
+                            except (ValueError, IndexError):
+                                pass
+                        elif entry and len(entry.values) <= 40:
+                            # SA handling.cfg - no wheel scale, use IDE default 1.0
+                            self.viewport._wheel_front_scale = 1.0
+                            self.viewport._wheel_rear_scale  = 1.0
+        except Exception:
+            pass
         self._load_carcols(vehicle_name)
 
     def _get_game_root(self): #vers 1
@@ -1211,7 +1035,7 @@ class _ToolbarMixin:
             for i,(p1,p2) in enumerate(pairs[:8]):
                 row=QWidget(); rl=QHBoxLayout(row)
                 rl.setContentsMargins(0,0,0,0); rl.setSpacing(2)
-                def _css(rgb): return f'background-color:rgb({int(rgb[0]*255)},{int(rgb[1]*255)},{int(rgb[2]*255)});min-height:16px;border:1px solid #333'
+                def _css(rgb): return f'background-color:rgb({int(rgb[0]*255)},{int(rgb[1]*255)},{int(rgb[2]*255)});min-height:16px;border:1px solid #333'  #vers 1
                 b1=QPushButton(); b1.setFixedSize(20,16); b1.setStyleSheet(_css(p1))
                 b2=QPushButton(); b2.setFixedSize(20,16); b2.setStyleSheet(_css(p2))
                 b1.setToolTip(f'Primary: rgb({int(p1[0]*255)},{int(p1[1]*255)},{int(p1[2]*255)})')
@@ -1276,23 +1100,69 @@ class _ToolbarMixin:
             # Load vehicles.ide info (wheel type) + carcols colours
             stem = os.path.splitext(os.path.basename(path))[0]
             from PyQt6.QtCore import QTimer
-            QTimer.singleShot(100, lambda s=stem: self._load_vehicle_meta(s))
-            # Auto-load shared TXDs after primary TXD is loaded
-            QTimer.singleShot(500, self._auto_load_shared_txds)
+            def _meta_then_wheels(s=stem):  #vers 1
+                self._load_vehicle_meta(s)
+                self._carcol_idx = -1
+                if getattr(self.viewport, '_show_wheels', False):
+                    self._toggle_show_wheels(True)
+                else:
+                    # No wheels — still need shared TXDs for vehicle body
+                    QTimer.singleShot(200, self._auto_load_shared_txds)
+            QTimer.singleShot(100, _meta_then_wheels)
         except Exception as e:
             import traceback; traceback.print_exc()
             self._set_status(f"Error: {e}")
         finally:
             self._show_progress(False)
 
-    def _collect_needed_textures(self): #vers 1
-        """Return set of texture names the current DFF needs."""
+    def _strip_tex_suffix(self, name: str) -> str: #vers 2
+        """Strip GTA texture suffix.
+        Handles: buildrt4_fehihwm (alpha suffix) and vehiclegeneric256 (numeric size suffix)."""
+        n = re.sub(r'_[a-z]{4,8}$', '', name)
+        n = re.sub(r'\d+$', '', n)
+        return n
+
+    def _get_ide_db(self): #vers 1
+        """Return IDEDatabase from mw.ide_db if loaded, else None."""
+        mw = getattr(self, 'main_window', None)
+        db = getattr(mw, 'ide_db', None)
+        if db and getattr(db, '_loaded', False) and db.model_map:
+            return db
+        db2 = getattr(getattr(mw, 'dat_browser', None), '_ide_db', None)
+        if db2 and db2.model_map:
+            return db2
+        return None
+
+    def _lookup_txd_for_stem(self, stem: str) -> str: #vers 1
+        """Return txd_name from IDE DB for model stem, or empty string."""
+        db = self._get_ide_db()
+        if not db:
+            return ''
+        obj = db.model_map.get(stem.lower())
+        if obj:
+            return obj.txd_name.lower()
+        # Try stripped stem
+        base = self._strip_tex_suffix(stem.lower())
+        if base != stem.lower():
+            obj = db.model_map.get(base)
+            if obj:
+                return obj.txd_name.lower()
+        return ''
+
+    def _collect_needed_textures(self): #vers 2
+        """Return set of texture names the current DFF needs.
+        Stores both full name and suffix-stripped base for fuzzy matching."""
         if not self._dff_model: return set()
         needed = set()
         for g in self._dff_model.geometries:
             for mat in g.materials:
                 name = (mat.texture_name or '').strip().lower()
-                if name: needed.add(name)
+                if not name:
+                    continue
+                needed.add(name)
+                base = self._strip_tex_suffix(name)
+                if base != name:
+                    needed.add(base)
         return needed
 
     def _upload_txd_additive(self, path: str): #vers 1
@@ -1314,23 +1184,30 @@ class _ToolbarMixin:
                 from OpenGL.GL import (glGenTextures, glBindTexture, GL_TEXTURE_2D,
                     glTexParameteri, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR,
                     GL_TEXTURE_MAG_FILTER, GL_LINEAR, GL_TEXTURE_WRAP_S,
-                    GL_TEXTURE_WRAP_T, GL_REPEAT, glTexImage2D, GL_RGBA,
-                    GL_UNSIGNED_BYTE, glGenerateMipmap, glDeleteTextures)
+                    GL_TEXTURE_WRAP_T, GL_REPEAT, GL_CLAMP_TO_EDGE, GL_MIRRORED_REPEAT,
+                    glTexImage2D, GL_RGBA, GL_UNSIGNED_BYTE, glGenerateMipmap, glDeleteTextures)
+                def _rw_wrap(rw):  #vers 1
+                    if rw == 2: return GL_CLAMP_TO_EDGE
+                    if rw == 3: return GL_MIRRORED_REPEAT
+                    return GL_REPEAT
                 for t in new_textures:
                     name = t['name'].lower()
                     rgba = t.get('rgba_data', b'')
                     w = t.get('width', 0); h = t.get('height', 0)
                     if not (rgba and w > 0 and h > 0): continue
+                    wrap_s = _rw_wrap(t.get('wrap_u', 1))
+                    wrap_t = _rw_wrap(t.get('wrap_v', 1))
                     gl_id = glGenTextures(1)
                     glBindTexture(GL_TEXTURE_2D, gl_id)
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR)
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT)
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT)
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap_s)
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap_t)
                     try:
                         glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,w,h,0,GL_RGBA,GL_UNSIGNED_BYTE,rgba)
                         glGenerateMipmap(GL_TEXTURE_2D)
                         self.viewport._tex_ids[name] = gl_id
+                        self.viewport._tex_wrap[name] = (t.get('wrap_u',1), t.get('wrap_v',1))
                     except Exception:
                         glDeleteTextures(1,[gl_id])
                 self.viewport.doneCurrent()
@@ -1374,70 +1251,161 @@ class _ToolbarMixin:
                 p = os.path.dirname(p)
         return ''
 
-    def _auto_load_shared_txds(self): #vers 3
-        """Find shared TXDs in a background thread — never blocks the UI."""
+    def _auto_load_shared_txds(self): #vers 5
+        """Find shared TXDs — uses preloaded cache first, worker for remainder."""
         if not self._dff_model: return
         needed  = self._collect_needed_textures()
+        if getattr(self.viewport, '_show_wheels', False):
+            wheel_data = self.viewport._get_wheel_geom_data()
+            if wheel_data:
+                wm = wheel_data[4] if len(wheel_data) > 4 else []
+                for mat in (wm or []):
+                    tname = getattr(mat, 'texture_name', '') or ''
+                    if tname:
+                        needed.add(tname.lower())
+                        base = self._strip_tex_suffix(tname.lower())
+                        if base != tname.lower(): needed.add(base)
         already = set(self.viewport._tex_ids.keys())
         missing = needed - already
         if not missing: return
+
+        # Step 0: Use preloaded shared cache from DAT Browser (instant, no worker)
+        mw = getattr(self, 'main_window', None)
+        preloaded = getattr(mw, 'shared_vehicle_textures', {})
+        if preloaded:
+            hits = []
+            for name in list(missing):
+                t = preloaded.get(name)
+                if not t:
+                    t = preloaded.get(self._strip_tex_suffix(name))
+                if t:
+                    hits.append(t); missing.discard(name)
+                    missing.discard(self._strip_tex_suffix(name))
+            if hits:
+                self.viewport._upload_textures(hits, additive=True)
+                self.viewport.update()
+                if hasattr(mw, 'log_message'):
+                    mw.log_message(f"+{len(hits)} shared textures loaded")
+            if not missing:
+                return  # everything satisfied from cache
 
         # Snapshot everything the worker needs — no shared mutable state
         game_root  = self._find_game_root()
         dff_dir    = os.path.dirname(self._current_dff_path) if self._current_dff_path else ''
         dff_stem   = os.path.splitext(os.path.basename(self._current_dff_path))[0].lower() if self._current_dff_path else ''
         img        = getattr(self, '_current_img', None)
+        ide_txd    = self._lookup_txd_for_stem(dff_stem)  # from IDE DB
+        _ide_db    = self._get_ide_db()
+        game_ver   = getattr(_ide_db, '_game', None) or getattr(_ide_db, 'game', 'vc')
 
         from PyQt6.QtCore import QThread, pyqtSignal as _sig
 
+        strip_suffix = self._strip_tex_suffix
         viewer_ref = self
 
         class _Worker(QThread):
             found = _sig(list)   # emits list of {'name','rgba_data','width','height','format'}
             status = _sig(str)
 
-            def run(self):
+            def run(self):  #vers 1
                 from apps.methods.txd_parser import parse_txd
                 import tempfile
                 collected = []
+                
                 miss = set(missing)  # local copy
+                # Build suffix-stripped alias map: base_name -> full_name
+                # so we can match TXD textures against suffixed DFF names
+                alias = {}
+                for n in list(miss):
+                    base = strip_suffix(n)
+                    if base != n:
+                        alias[base] = n  # base -> suffixed
 
-                def _try_txd_data(data):
+                def _try_txd_data(data):  #vers 1
                     nonlocal miss
                     try:
                         textures = parse_txd(data)
-                        hits = [t for t in textures if t['name'].lower() in miss
-                                and t.get('rgba_data') and t['width']>0]
+                        hits = []
+                        for t in textures:
+                            tname = t['name'].lower()
+                            if not (t.get('rgba_data') and t['width'] > 0):
+                                continue
+                            tbase = strip_suffix(tname)
+                            if tname in miss:
+                                # Exact match
+                                hits.append(t)
+                            elif tname in alias:
+                                # TXD has base name, miss has suffixed name
+                                t2 = dict(t); t2['name'] = alias[tname]
+                                hits.append(t2); hits.append(t)
+                            elif tbase in miss:
+                                # TXD has suffixed name (armytruk8bit128), miss has base (armytruk8bit)
+                                hits.append(t)
+                            elif tbase in alias:
+                                # Both suffixed — map to what DFF expects
+                                t2 = dict(t); t2['name'] = alias[tbase]
+                                hits.append(t2); hits.append(t)
                         if hits:
                             collected.extend(hits)
-                            miss -= {t['name'].lower() for t in hits}
+                            for t in hits:
+                                miss.discard(t['name'].lower())
+                                miss.discard(strip_suffix(t['name'].lower()))
                         return len(hits)
                     except Exception:
                         return 0
 
-                # 0. models/generic/ — always load vehicle.txd + wheels.txd
-                # wheels.txd loaded unconditionally (wheel geoms need it even if not in miss)
+                # 0. Shared TXDs from models/ — game-version aware
+                # GTA3/LC: models/generic.txd, models/Generic/wheels.DFF
+                # VC:      models/generic.txd, models/Generic/wheels.DFF
+                # SA:      models/generic/vehicle.txd, models/generic/wheels.txd, models/generic/wheels.DFF
                 if game_root:
-                    generic = os.path.join(game_root,'models','generic')
-                    for fn in ('vehicle.txd','wheels.txd','vehiclecommon.txd'):
-                        p = os.path.join(generic, fn)
-                        if os.path.isfile(p):
+                    m = os.path.join(game_root, 'models')
+                    if game_ver == 'sa':
+                        shared_txds = [
+                            os.path.join(m, 'generic', 'vehicle.txd'),
+                            os.path.join(m, 'generic', 'wheels.txd'),
+                            os.path.join(m, 'misc.txd'),  # SA has misc.txd in models/
+                            # Additional SA shared vehicle TXDs on disk
+                            os.path.join(m, 'generic', 'vehiclecommon.txd'),
+                            os.path.join(m, 'generic', 'vehiclegeneric.txd'),
+                            os.path.join(m, 'generic', 'vehiclegrunge.txd'),
+                            os.path.join(m, 'generic', 'vehiclelights.txd'),
+                            os.path.join(m, 'generic', 'vehicletyres.txd'),
+                        ]
+                        # Also scan models/txd/ if it exists
+                        txd_dir = os.path.join(m, 'txd')
+                        if os.path.isdir(txd_dir):
+                            for fn in os.listdir(txd_dir):
+                                if fn.lower().startswith('vehicle') and fn.lower().endswith('.txd'):
+                                    shared_txds.append(os.path.join(txd_dir, fn))
+                        wheel_dffs = [
+                            os.path.join(m, 'generic', 'wheels.DFF'),
+                            os.path.join(m, 'generic', 'wheels.dff'),
+                        ]
+                    else:
+                        # GTA3 / VC / LC: generic.txd + misc.txd in models/, wheels.DFF in models/Generic/
+                        shared_txds = [
+                            os.path.join(m, 'generic.txd'),
+                            os.path.join(m, 'particle.txd'),
+                            os.path.join(m, 'misc.txd'),
+                            os.path.join(m, 'MISC.TXD'),
+                            os.path.join(m, 'wheels.txd'),
+                            os.path.join(m, 'wheels.TXD'),
+                        ]
+                        wheel_dffs = [
+                            os.path.join(m, 'Generic', 'wheels.DFF'),
+                            os.path.join(m, 'Generic', 'wheels.dff'),
+                            os.path.join(m, 'generic', 'wheels.DFF'),
+                            os.path.join(m, 'generic', 'wheels.dff'),
+                        ]
+                    for p in shared_txds:
+                        if os.path.isfile(p) and miss:
                             try:
-                                with open(p,'rb') as f: raw=f.read()
-                                # For wheels.txd always collect all textures
-                                if 'wheels' in fn.lower():
-                                    from apps.methods.txd_parser import parse_txd
-                                    for t in parse_txd(raw):
-                                        if t.get('rgba_data') and t['width']>0:
-                                            collected.append(t)
-                                elif miss:
-                                    _try_txd_data(raw)
+                                with open(p, 'rb') as f: _try_txd_data(f.read())
                             except Exception: pass
-                    # Store wheels.DFF path for assembly use
-                    for wfn in ('wheels.DFF','wheels.dff'):
-                        wp=os.path.join(generic,wfn)
+                    for wp in wheel_dffs:
                         if os.path.isfile(wp):
-                            viewer_ref._wheels_model_path=wp; break
+                            viewer_ref._wheels_model_path = wp; break
                     if not miss:
                         if collected: self.found.emit(collected)
                         return
@@ -1454,6 +1422,34 @@ class _ToolbarMixin:
                             except Exception: pass
                     except Exception: pass
 
+                # 1a. IDE DB lookup — exact TXD name from parsed IDE files
+                if miss and img and hasattr(img, 'entries') and ide_txd:
+                    txd_key = ide_txd if ide_txd.endswith('.txd') else ide_txd + '.txd'
+                    txd_map = {e.name.lower(): e for e in img.entries if e.name.lower().endswith('.txd')}
+                    entry = txd_map.get(txd_key)
+                    if entry:
+                        self.status.emit(f'IDE: loading {txd_key}...')
+                        try:
+                            data = img.read_entry_data(entry)
+                            if data: _try_txd_data(data)
+                        except Exception: pass
+
+                # 1b. GTA3 only: vehicle TXDs are in models/txd.img not gta3.img
+                if miss and img and getattr(img, 'file_path', '') and game_ver == 'gta3':
+                    img_dir = os.path.dirname(img.file_path)
+                    txd_img_path = os.path.join(img_dir, 'txd.img')
+                    if os.path.isfile(txd_img_path) and ide_txd:
+                        try:
+                            from apps.methods.img_core_classes import IMGFile
+                            sib = IMGFile(txd_img_path)
+                            txd_key = ide_txd if ide_txd.endswith('.txd') else ide_txd + '.txd'
+                            for e in sib.entries:
+                                if e.name.lower() == txd_key:
+                                    data = sib.read_entry_data(e)
+                                    if data: _try_txd_data(data)
+                                    break
+                        except Exception: pass
+
                 # 1b. Current IMG (gta3.img) — look for vehicle*.txd entries
                 # SA stores vehiclegeneric256 etc inside gta3.img as separate TXDs
                 if miss and img and hasattr(img,'entries'):
@@ -1462,9 +1458,14 @@ class _ToolbarMixin:
                     # Known SA shared vehicle TXD names inside gta3.img
                     candidates=['vehiclecommon.txd','vehicle.txd','vehicles.txd',
                                  'vehiclegeneric.txd','vehiclegrunge.txd',
-                                 'vehiclelights.txd','vehicletyres.txd']
-                    # Also try prefix match for any vehicle*.txd
+                                 'vehiclelights.txd','vehicletyres.txd',
+                                 # SA uses full names with size suffix inside gta3.img
+                                 'vehiclegeneric256.txd','vehiclegrunge256.txd',
+                                 'vehiclelights128.txd','vehicletyres128.txd',
+                                 'carcommon.txd','carpback.txd','carplate.txd',]
+                    # Also try prefix match for any vehicle*.txd or car*.txd
                     candidates += [n for n in txd_map if n.startswith('vehicle') and n not in candidates]
+                    candidates += [n for n in txd_map if n.startswith('car') and n not in candidates]
                     tried=set()
                     for cand in candidates:
                         if not miss: break
@@ -1477,7 +1478,8 @@ class _ToolbarMixin:
 
                 # 2. Current IMG — ONLY look up exact stem.txd entries, no full scan
                 if miss and img and hasattr(img,'entries'):
-                    self.status.emit(f'Scanning IMG for {len(miss)} missing textures…')
+                    miss_names = ', '.join(sorted(miss)[:8])
+                    self.status.emit(f'Missing textures: {miss_names}')
                     # Build a map of entry names first (fast, no data read)
                     txd_entries = {e.name.lower(): e for e in img.entries
                                    if e.name.lower().endswith('.txd')}
@@ -1497,8 +1499,27 @@ class _ToolbarMixin:
                                 except Exception: pass
                                 break
 
+                # 3. Fallback — scan all vehicle*.txd in models/ subdirs on disk
+                if miss and game_root:
+                    m2 = os.path.join(game_root, 'models')
+                    for subdir in ('', 'generic', 'txd'):
+                        d = os.path.join(m2, subdir) if subdir else m2
+                        if not os.path.isdir(d): continue
+                        for fn in sorted(os.listdir(d)):
+                            if not miss: break
+                            fnl = fn.lower()
+                            if not fnl.endswith('.txd'): continue
+                            if not any(fnl.startswith(p) for p in ('vehicle','carpl','carpb','misc','generic')):
+                                continue
+                            try:
+                                with open(os.path.join(d, fn),'rb') as f: _try_txd_data(f.read())
+                            except Exception: pass
                 if collected:
+                    found_names = ', '.join(t['name'] for t in collected[:8])
+                    self.status.emit(f'Found textures: {found_names}')
                     self.found.emit(collected)
+                if miss:
+                    self.status.emit(f'Still missing: {", ".join(sorted(miss)[:8])}')
 
         self._shared_txd_worker = _Worker()
         self._shared_txd_worker.status.connect(self._set_status)
@@ -1517,7 +1538,20 @@ class _ToolbarMixin:
         # Filter already-loaded
         new = [t for t in textures if t['name'].lower() not in self.viewport._tex_ids]
         if not new: return
-        self.viewport._upload_textures(new)
+        # Defer upload until GL context ready
+        def _do_shared_upload():  #vers 1
+            try:
+                vp = self.viewport
+                if hasattr(vp, 'isValid') and not vp.isValid():
+                    from PyQt6.QtCore import QTimer
+                    QTimer.singleShot(200, _do_shared_upload)
+                    return
+                vp._upload_textures(new, additive=True)
+                vp.update()
+            except Exception:
+                pass
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(50, _do_shared_upload)
         # Add to tex list
         from PyQt6.QtGui import QIcon, QImage, QPixmap
         from PyQt6.QtWidgets import QListWidgetItem
@@ -1537,7 +1571,6 @@ class _ToolbarMixin:
         self._set_status(f'+{len(new)} shared textures loaded')
         self.viewport.update()
 
-
     def load_txd(self, path: str): #vers 2
         try:
             from apps.methods.txd_parser import parse_txd
@@ -1548,14 +1581,18 @@ class _ToolbarMixin:
             textures = parse_txd(data)
             if not textures:
                 self._set_status(f'No textures: {os.path.basename(path)}'); return
-            # GL upload — defer if widget not yet shown
-            def _do_upload():
-                try: self.viewport._upload_textures(textures); self.viewport.update()
-                except Exception as ue: self._set_status(f'GL upload: {ue}')
-            if self.viewport.isVisible():
-                _do_upload()
-            else:
-                QTimer.singleShot(400, _do_upload)
+            # GL upload — defer until GL context is initialized
+            def _do_upload():  #vers 1
+                try:
+                    vp = self.viewport
+                    if hasattr(vp, 'isValid') and not vp.isValid():
+                        QTimer.singleShot(200, _do_upload)
+                        return
+                    vp._upload_textures(textures)
+                    vp.update()
+                except Exception as ue:
+                    self._set_status(f'GL upload: {ue}')
+            QTimer.singleShot(50, _do_upload)
             # Texture list with thumbnails
             self._tex_list.clear()
             for t in textures:
@@ -1575,19 +1612,49 @@ class _ToolbarMixin:
             import traceback; traceback.print_exc()
             self._set_status(f'TXD error: {e}')
 
-    def load_img(self, img): #vers 1
-        """Populate IMG list with DFF entries for quick selection."""
+    def load_img(self, img): #vers 3
+        """Populate IMG list with vehicle DFF entries only (from handling.cfg / IDE DB).
+        Also auto-loads vehicle data files from mw.vehicle_data_paths if not yet loaded."""
         self._current_img = img
+        # Auto-load vehicle data files if not already loaded
+        mw = getattr(self, 'main_window', None)
+        vdata = getattr(mw, 'vehicle_data_paths', {})
+        if vdata and not getattr(self, '_handling_loaded', False):
+            for key in ('handling', 'carcols', 'carmods', 'cargrp', 'vehicles_ide'):
+                p = vdata.get(key, '')
+                if p and os.path.isfile(p):
+                    self._open_file(p)
+            self._handling_loaded = True
         self._img_list.clear()
         if not img or not hasattr(img, 'entries'):
             return
+        # Build vehicle name filter from handling parser or mw.vehicle_names
+        vehicle_names = set()
+        try:
+            if hasattr(self, '_tab_handling') and hasattr(self._tab_handling, '_parser'):
+                p = self._tab_handling._parser
+                if p and p.entries:
+                    vehicle_names = {e.name.lower() for e in p.entries if e.name}
+        except Exception:
+            pass
+        if not vehicle_names:
+            mw = getattr(self, 'main_window', None)
+            vehicle_names = getattr(mw, 'vehicle_names', set())
         for entry in img.entries:
-            if entry.name.lower().endswith('.dff'):
-                item = QListWidgetItem(entry.name)
-                item.setData(Qt.ItemDataRole.UserRole, entry)
-                self._img_list.addItem(item)
+            if not entry.name.lower().endswith('.dff'):
+                continue
+            stem = entry.name.rsplit('.', 1)[0].lower()
+            # Only show if known vehicle, or no filter available (show all)
+            if vehicle_names and stem not in vehicle_names:
+                continue
+            stem, ext = os.path.splitext(entry.name)
+            display = re.sub(r'_[a-z0-9]{6,12}$', '', stem, flags=re.IGNORECASE) + ext
+            item = QListWidgetItem(display)
+            item.setData(Qt.ItemDataRole.UserRole, entry)
+            self._img_list.addItem(item)
         count = self._img_list.count()
-        self._set_status(f"IMG: {count} DFF entries loaded")
+        total = sum(1 for e in img.entries if e.name.lower().endswith('.dff'))
+        self._set_status(f"IMG: {count} vehicles ({total} DFFs total)")
 
     def _on_img_entry_dclicked(self, item): #vers 2
         """Double-click IMG entry — extract and load DFF + auto TXD with progress."""
@@ -1598,12 +1665,14 @@ class _ToolbarMixin:
         from PyQt6.QtWidgets import QApplication
         from PyQt6.QtCore import Qt as _Qt
         name = entry.name
+        stem0, ext0 = os.path.splitext(name)
+        display_name = re.sub(r'_[a-z0-9]{6,12}$', '', stem0, flags=re.IGNORECASE) + ext0
         try:
             import tempfile
             # Show busy cursor + progress bar immediately
             QApplication.setOverrideCursor(_Qt.CursorShape.WaitCursor)
             self._show_progress(True)
-            self._set_status(f"Loading {name}…")
+            self._set_status(f"Loading {display_name}…")
             QApplication.processEvents()
 
             # Step 1: Extract DFF
@@ -1616,9 +1685,12 @@ class _ToolbarMixin:
             dff_path = os.path.join(tmp_dir, name)
             with open(dff_path,'wb') as f: f.write(data)
 
-            # Step 2: Parse + load DFF
+            # Step 2: Parse + load DFF, switch to 3D Preview tab first
             self._set_status(f"Parsing {name}…")
             QApplication.processEvents()
+            if hasattr(self, '_tabs'):
+                self._tabs.setCurrentIndex(0)
+                QApplication.processEvents()
             self.load_dff(dff_path)
             QApplication.processEvents()
 
@@ -1653,7 +1725,7 @@ class _ToolbarMixin:
             pm.exec(self.cursor().pos())
 
 
-    def _show_dropdown_menu(self):
+    def _show_dropdown_menu(self): #vers 1
         """Pop up the workshop menus as a QMenu below the [Menu] button."""
         menu = QMenu(self)
         self._build_menus_into_qmenu(menu)
@@ -1661,12 +1733,12 @@ class _ToolbarMixin:
         pos = btn.mapToGlobal(btn.rect().bottomLeft()) if btn else self.cursor().pos()
         menu.exec(pos)
 
-    def _show_popup_menu(self):   # compat alias
+    def _show_popup_menu(self): #vers 1
         self._show_dropdown_menu()
 
     #    [ℹ] Info — About dialog
 
-    def _show_about(self):
+    def _show_about(self): #vers 1
         """[ℹ] button — show About / Info for this workshop."""
         author = getattr(self, "App_author",      "X-Seti")
         year   = getattr(self, "App_year",        "2026")
@@ -1694,7 +1766,7 @@ class _ToolbarMixin:
 
     #    [⚙] Cog — Global AppSettings theme dialog
 
-    def _launch_theme_settings(self):
+    def _launch_theme_settings(self): #vers 1
         """[⚙] Cog — opens the global AppSettings / SettingsDialog.
         Identical pattern to radar_workshop._launch_theme_settings.
         """
@@ -1716,7 +1788,7 @@ class _ToolbarMixin:
 
     #    [Settings] — Workshop-local settings dialog
 
-    def _show_workshop_settings(self):
+    def _show_workshop_settings(self): #vers 1
         """[Settings] button — workshop-local settings.
         Tabs: Fonts / Display / Menu / About
         Reads/writes WorkshopSettings (per-app JSON).
@@ -1730,14 +1802,14 @@ class _ToolbarMixin:
         except Exception:
             pass
 
-        lo  = QVBoxLayout(dlg)
+        showws  = QVBoxLayout(dlg)
         tabs = QTabWidget()
         ws  = self.WS
 
         #    Tab 1: Fonts
         ft  = QWidget(); fl = QVBoxLayout(ft)
 
-        def _font_row(label, fam_key, sz_key, def_fam, def_sz, mn=7, mx=32):
+        def _font_row(label, fam_key, sz_key, def_fam, def_sz, mn=7, mx=32):  #vers 1
             grp = QGroupBox(label); row = QHBoxLayout(grp)
             fc = QFontComboBox()
             fc.setCurrentFont(__import__("PyQt6.QtGui", fromlist=["QFont"])
@@ -1840,7 +1912,7 @@ class _ToolbarMixin:
         game_edit = QLineEdit(ws.get("game_root", ""))
         game_edit.setPlaceholderText("e.g. /home/user/GTASA-PC")
         browse_btn = QPushButton("Browse…")
-        def _browse_game():
+        def _browse_game():  #vers 1
             from PyQt6.QtWidgets import QFileDialog
             d = QFileDialog.getExistingDirectory(dlg, "Select GTA Game Root", game_edit.text())
             if d: game_edit.setText(d)
@@ -1859,13 +1931,13 @@ class _ToolbarMixin:
         tabs.addTab(vt, "Vehicle")
 
         #    Dialog buttons
-        lo.addWidget(tabs)
+        showws.addWidget(tabs)
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok |
             QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(dlg.accept)
         btns.rejected.connect(dlg.reject)
-        lo.addWidget(btns)
+        showws.addWidget(btns)
 
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
@@ -1902,7 +1974,7 @@ class _ToolbarMixin:
 
     #    Theme helpers
 
-    def _get_icon_color(self) -> str:
+    def _get_icon_color(self) -> str: #vers 1
         """Returns text_primary from current theme."""
         if APPSETTINGS_AVAILABLE and self.app_settings:
             try:
@@ -1913,7 +1985,7 @@ class _ToolbarMixin:
         bg = self.palette().window().color()
         return "#e0e0e0" if bg.lightness() < 128 else "#202020"
 
-    def _get_accent_color(self) -> str:
+    def _get_accent_color(self) -> str: #vers 1
         """Returns accent_primary from current theme."""
         if APPSETTINGS_AVAILABLE and self.app_settings:
             try:
@@ -1923,7 +1995,7 @@ class _ToolbarMixin:
                 pass
         return "#4682FF"
 
-    def _apply_theme(self):
+    def _apply_theme(self): #vers 1
         """Apply QSS from AppSettings."""
         if self.app_settings:
             try:
@@ -1932,7 +2004,7 @@ class _ToolbarMixin:
             except Exception:
                 pass
 
-    def _refresh_icons(self):
+    def _refresh_icons(self): #vers 1
         """Called on theme change — re-apply theme and rebuild toolbar icons."""
         self._apply_theme()
         if hasattr(self, "_corner_overlay"):
@@ -1989,7 +2061,7 @@ class _LayoutMixin:
         main_layout.setSpacing(self.setspacing)
 
         # Viewport must exist before toolbar (toolbar buttons reference it)
-        self.viewport = DFFViewport()
+        self.viewport = VehicleViewport()
         self.viewport.app_settings = self.app_settings
 
         main_layout.addWidget(self._create_toolbar())
@@ -2071,7 +2143,7 @@ class _LayoutMixin:
         for label,tip,cb,iname in [
                 ('Open DFF','Open DFF model',self._vw_pick_dff,'open'),
                 ('Open TXD','Open TXD textures',self._vw_pick_txd,'open')]:
-            b=QToolButton(); b.setFixedHeight(26); b.setFont(self.panel_font); b.setToolTip(tip)
+            b=QToolButton(); b.setFixedHeight(28); b.setFont(self.panel_font); b.setToolTip(tip)
             b.setText(label)
             try:
                 ico=getattr(SVGIconFactory,f'{iname}_icon',None)
@@ -2086,7 +2158,7 @@ class _LayoutMixin:
 
         return panel
 
-    def _create_left_panel_old(self):
+    def _create_left_panel_old(self): #vers 1
         """Left panel — list + Add/Remove + info label.
         Override to replace with your own content.
         """
@@ -2125,7 +2197,7 @@ class _LayoutMixin:
 
         return panel
 
-    def _create_centre_panel(self): #Vers 1
+    def _create_centre_panel(self): #Vers 1  #vers 1
         """Centre panel — tab view with placeholder tabs.
         Override to replace with your own canvas/tabs.
         """
@@ -2150,7 +2222,7 @@ class _LayoutMixin:
         cl.addWidget(self._view_tabs)
         return panel
 
-    def _create_right_panel_old(self): #Vers 1
+    def _create_right_panel_old(self): #Vers 1  #vers 1
         """Right panel — sidebar with 2-col tool button grid.
         Override _populate_sidebar() to change tool buttons.
         """
@@ -2171,7 +2243,503 @@ class _LayoutMixin:
 
 
         # - right panel — model info
-    def _create_right_panel(self): #vers 2
+    def _create_right_panel(self): #vers 4
+        panel = QFrame(); panel.setFrameStyle(QFrame.Shape.StyledPanel)
+        panel.setMinimumWidth(155); panel.setMaximumWidth(200)
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(*self.get_panel_margins())
+        lay.setSpacing(2)
+
+        ic = self._get_icon_color()
+        def _icon(fname, size=14):  #vers 1
+            if not ICONS_AVAILABLE: return None
+            try:
+                fn = getattr(SVGIconFactory, f'get_{fname}_icon', None)
+                return fn(size, ic) if fn else None
+            except Exception: return None
+
+        from PyQt6.QtWidgets import QToolButton as _QTB, QSlider
+
+        def _tbtn(text, tip, cb, iname=None, checkable=False, checked=False):  #vers 1
+            b = _QTB(); b.setFont(self.infobar_font)
+            b.setToolTip(tip); b.setMinimumHeight(28)
+            ico = _icon(iname)
+            if ico:
+                b.setIcon(ico); b.setIconSize(QSize(13,13))
+                b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+                b.setToolTip(f'{text} — {tip}')
+            else:
+                b.setText(text)
+                b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+            b.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            if checkable:
+                b.setCheckable(True); b.setChecked(checked)
+                b.toggled.connect(cb)
+            else:
+                b.clicked.connect(lambda _=False: cb())
+            return b
+
+        def _tbtn_txt(text, tip, cb, iname=None, checkable=False, checked=False):  #vers 1
+            """Button with icon+short text side by side."""
+            b = _QTB(); b.setFont(self.infobar_font)
+            b.setToolTip(tip); b.setMinimumHeight(28)
+            ico = _icon(iname)
+            if ico:
+                b.setIcon(ico); b.setIconSize(QSize(13,13))
+                b.setText(text)
+                b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            else:
+                b.setText(text)
+                b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+            b.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            if checkable:
+                b.setCheckable(True); b.setChecked(checked)
+                b.toggled.connect(cb)
+            else:
+                b.clicked.connect(lambda _=False: cb())
+            return b
+
+        def _row(*widgets, spacing=2):  #vers 1
+            w = QWidget(); h = QHBoxLayout(w)
+            h.setContentsMargins(0,0,0,0); h.setSpacing(spacing)
+            for ww in widgets:
+                if isinstance(ww, int): h.addSpacing(ww)
+                elif ww == 'stretch':  h.addStretch()
+                else: h.addWidget(ww)  # no stretch factor — use natural size
+            return w
+
+        def _sep():  #vers 1
+            from PyQt6.QtWidgets import QFrame as _QF
+            s = _QF(); s.setFrameShape(_QF.Shape.HLine)
+            s.setFixedHeight(1); s.setStyleSheet("background:#333;")
+            return s
+
+        def _lbl(text):  #vers 1
+            l = QLabel(text); l.setFont(self.panel_font); return l
+
+        #    Render                                       
+        lay.addWidget(_lbl("Render"))
+        self._mode_group = QButtonGroup(self); self._mode_group.setExclusive(True)
+        mode_row = QWidget(); mode_h = QHBoxLayout(mode_row)
+        mode_h.setContentsMargins(0,0,0,0); mode_h.setSpacing(2)
+        for label, mode, iname in [("Wire","wireframe","dff_edit"),
+                                    ("Solid","solid","properties"),
+                                    ("Tex","textured","image")]:
+            b = _QTB(); b.setFont(self.infobar_font); b.setMinimumHeight(28)
+            b.setToolTip(f"{mode.capitalize()} render mode")
+            ico = _icon(iname)
+            if ico: b.setIcon(ico); b.setIconSize(QSize(13,13))
+            b.setText(label)
+            b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            b.setCheckable(True); b.setChecked(mode=='solid')
+            b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            b.toggled.connect(lambda checked, m=mode: self._set_mode(m) if checked else None)
+            self._mode_group.addButton(b); mode_h.addWidget(b)
+        lay.addWidget(mode_row)
+
+        # Backface + Grid + PreLit — icon-only row
+        self._cull_btn   = _tbtn("Cull",   "Backface culling", self.viewport.set_backface_cull, 'col_file', True, False)
+        self._grid_btn   = _tbtn("Grid",   "Toggle grid",      self.viewport.set_show_grid,     'fit_grid', True, True)
+        self._prelit_btn = _tbtn("PreLit", "Pre-lighting",     self.viewport.set_prelight,      'brighten', True, False)
+        lay.addWidget(_row(self._cull_btn, self._grid_btn, self._prelit_btn))
+        lay.addWidget(_sep())
+
+        #    Camera + Light                                
+        _reset_btn = _tbtn_txt("Reset", "Reset camera", self.viewport.reset_camera, 'refresh')
+        _light_btn = _tbtn_txt("Light", "Light setup",  self._light_setup_dialog,   'weather')
+        lay.addWidget(_row(_reset_btn, _light_btn))
+        lay.addWidget(_sep())
+
+        #    Paint                                         
+        lay.addWidget(_lbl("Paint"))
+        self._paint1_btn = QPushButton("Pri")
+        self._paint2_btn = QPushButton("Sec")
+        self._carcol_btn = QPushButton("Cols")
+        for b in (self._paint1_btn, self._paint2_btn, self._carcol_btn):
+            b.setMinimumHeight(28); b.setFont(self.infobar_font)
+        self._paint1_btn.clicked.connect(self._pick_paint1)
+        self._paint2_btn.clicked.connect(self._pick_paint2)
+        self._carcol_btn.clicked.connect(self._cycle_carcol)
+        self._carcol_btn.setToolTip("Cycle through carcols.dat colour pairs")
+        lay.addWidget(_row(self._paint1_btn, self._paint2_btn, self._carcol_btn))
+        self._update_paint_btns()
+
+        self._carcols_widget = QWidget()
+        self._carcols_lay = QVBoxLayout(self._carcols_widget)
+        self._carcols_lay.setContentsMargins(0,0,0,2); self._carcols_lay.setSpacing(2)
+        lay.addWidget(self._carcols_widget)
+        lay.addWidget(_sep())
+
+        #    Assembly                                      
+        lay.addWidget(_lbl("Assembly"))
+        self._assemble_btn = _tbtn_txt("All",    "Show all parts", self._toggle_assembly_mode, 'select_all', True, False)
+        self._damage_btn   = _tbtn_txt("Dmg", "Damaged state",  self._toggle_damage_mode,   'warning',    True, False)
+        self._lod_btn      = _tbtn_txt("LOD",    "Show LOD",       self._toggle_lod_mode,      'search',     True, False)
+        lay.addWidget(_row(self._assemble_btn, self._damage_btn, self._lod_btn))
+        lay.addWidget(_sep())
+
+        #    Animate                                       
+        lay.addWidget(_lbl("Animate"))
+        self._anim_btn = _tbtn_txt('Play', 'Play door animation',
+            self._toggle_animation, 'go', True, False)
+        self._anim_btn.setFixedWidth(60)
+        spd_slider = QSlider(Qt.Orientation.Horizontal)
+        spd_slider.setRange(1, 30); spd_slider.setValue(10)
+        spd_slider.setToolTip('Animation speed')
+        spd_slider.valueChanged.connect(self._set_anim_speed)
+        self._anim_speed_slider = spd_slider
+        anim_row = QWidget(); anim_h = QHBoxLayout(anim_row)
+        anim_h.setContentsMargins(0,0,0,0); anim_h.setSpacing(3)
+        anim_h.addWidget(self._anim_btn)
+        anim_h.addWidget(spd_slider, 1)
+        lay.addWidget(anim_row)
+
+        # Door toggles — icon-only, 6 buttons
+        lay.addWidget(_lbl("Doors"))
+        door_row = QWidget(); door_h = QHBoxLayout(door_row)
+        door_h.setContentsMargins(0,0,0,0); door_h.setSpacing(2)
+        self._door_btns = {}
+        for dlabel, dname in [('LF','door_lf'),('RF','door_rf'),('LR','door_lr'),
+                               ('RR','door_rr'),('Hd','bonnet'),('Bt','boot')]:
+            db = _QTB(); db.setFixedHeight(22); db.setFixedWidth(28)
+            db.setFont(self.infobar_font); db.setText(dlabel)
+            db.setToolTip(f'Open/close {dname}')
+            db.setCheckable(True)
+            db.toggled.connect(lambda checked, n=dname: self._toggle_door(n, checked))
+            door_h.addWidget(db); self._door_btns[dname] = db
+        lay.addWidget(door_row)
+        lay.addWidget(_sep())
+
+        #    Wheels                                        
+        self._wheels_btn = _tbtn_txt("Wheels", "Show wheels",
+                                     self._toggle_show_wheels, 'col_workshop', True, False)
+        self._wheels_btn.setFixedWidth(72)
+        steer_slider = QSlider(Qt.Orientation.Horizontal)
+        steer_slider.setRange(-35, 35); steer_slider.setValue(0)
+        steer_slider.setToolTip('Front wheel steer angle')
+        steer_slider.valueChanged.connect(self._set_wheel_steer)
+        self._wheel_heading_slider = steer_slider
+        wheel_row = QWidget(); wheel_h = QHBoxLayout(wheel_row)
+        wheel_h.setContentsMargins(0,0,0,0); wheel_h.setSpacing(3)
+        wheel_h.addWidget(self._wheels_btn); wheel_h.addWidget(steer_slider, 1)
+        lay.addWidget(wheel_row)
+
+        # Wheel scale adjustment (+/- 10%)
+        scale_row = QWidget(); scale_h = QHBoxLayout(scale_row)
+        scale_h.setContentsMargins(0,0,0,0); scale_h.setSpacing(3)
+        scale_lbl = QLabel('Size'); scale_lbl.setFont(self.infobar_font)
+        scale_lbl.setFixedWidth(28)
+        wheel_scale_slider = QSlider(Qt.Orientation.Horizontal)
+        wheel_scale_slider.setRange(-30, 30); wheel_scale_slider.setValue(0)
+        wheel_scale_slider.setToolTip('Wheel size offset ±10% (does not save)')
+        self._wheel_scale_slider = wheel_scale_slider
+        self._wheel_scale_lbl = QLabel('0%'); self._wheel_scale_lbl.setFont(self.infobar_font)
+        self._wheel_scale_lbl.setFixedWidth(28)
+        def _on_scale_change(v):  #vers 1
+            self._wheel_scale_lbl.setText(f'{v:+d}%')
+            mult = 1.0 + v / 100.0
+            self.viewport._wheel_scale_mult = mult
+            if getattr(self.viewport, '_show_wheels', False):
+                self._toggle_show_wheels(True)
+        wheel_scale_slider.valueChanged.connect(_on_scale_change)
+        scale_h.addWidget(scale_lbl); scale_h.addWidget(wheel_scale_slider, 1)
+        scale_h.addWidget(self._wheel_scale_lbl)
+        lay.addWidget(scale_row)
+        lay.addWidget(_sep())
+
+        #    Model Info (collapsible)                       
+        info_toggle = _QTB(); info_toggle.setText("▸ Info")
+        info_toggle.setFont(self.infobar_font); info_toggle.setFixedHeight(22)
+        info_toggle.setCheckable(True)
+        info_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        info_toggle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        lay.addWidget(info_toggle)
+
+        self._info_lbl = QLabel('—')
+        self._info_lbl.setFont(self.infobar_font)
+        self._info_lbl.setWordWrap(True)
+        self._info_lbl.setVisible(False)
+        lay.addWidget(self._info_lbl)
+        info_toggle.toggled.connect(lambda c: (
+            self._info_lbl.setVisible(c),
+            info_toggle.setText(("▾ Info" if c else "▸ Info"))))
+        lay.addWidget(_sep())
+
+        #    Editing                                       
+        lay.addWidget(_lbl("Editing"))
+        # Row 1: CoM, Dummies, Suspension
+        # Row 2: Seats, Bounds, Export
+        edit_defs = [
+            ("CoM",  "Centre of Mass — reads from handling.cfg", self._toggle_com_indicator,  'locate',    True),
+            ("Dum",  "Dummy frame positions",                     self._toggle_dummy_overlay,  'tree',      True),
+            ("Susp", "Suspension travel range",                   self._toggle_suspension_vis, 'split',     True),
+            ("Seat", "Seat positions from ped_frontseat frames",  self._toggle_seat_overlay,   'properties',True),
+            ("Box",  "Bounding box",                              self._toggle_bounds,         'col_file',  True),
+            ("Exp",  "Export DFF to OBJ/DFF",                     self._export_dff,            'export',    False),
+        ]
+        self._edit_btns = []
+        er1 = QWidget(); eh1 = QHBoxLayout(er1); eh1.setContentsMargins(0,0,0,0); eh1.setSpacing(2)
+        er2 = QWidget(); eh2 = QHBoxLayout(er2); eh2.setContentsMargins(0,0,0,0); eh2.setSpacing(2)
+        for i, (label, tip, cb, iname, checkable) in enumerate(edit_defs):
+            b = _QTB(); b.setMinimumHeight(28)
+            b.setFont(self.infobar_font); b.setToolTip(tip)
+            ico = _icon(iname)
+            if ico:
+                b.setIcon(ico); b.setIconSize(QSize(13,13))
+                b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+            else:
+                b.setText(label)
+            b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            if checkable:
+                b.setCheckable(True)
+                b.toggled.connect(lambda checked, fn=cb, lbl=label: fn() if True else None)
+            else:
+                b.clicked.connect(lambda _=False, fn=cb: fn())
+            self._edit_btns.append(b)
+            (eh1 if i < 3 else eh2).addWidget(b)
+        lay.addWidget(er1); lay.addWidget(er2)
+
+        lay.addStretch()
+        return panel
+        panel = QFrame(); panel.setFrameStyle(QFrame.Shape.StyledPanel)
+        panel.setMinimumWidth(160); panel.setMaximumWidth(210)
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(*self.get_panel_margins())
+        lay.setSpacing(3)
+
+        ic = self._get_icon_color()
+        def _icon(name, size=16):  #vers 1
+            if not ICONS_AVAILABLE: return None
+            try:
+                fn = getattr(SVGIconFactory, name+'_icon', None)
+                return fn(size, ic) if fn else None
+            except Exception: return None
+
+        from PyQt6.QtWidgets import QToolButton as _QTB, QSlider
+
+        def _tbtn(text, tip, cb, iname=None, checkable=False, checked=False, w=None):  #vers 1
+            b = _QTB(); b.setFont(self.infobar_font)
+            b.setToolTip(tip); b.setFixedHeight(26)
+            ico = _icon(iname)
+            if ico:
+                b.setIcon(ico); b.setIconSize(QSize(14,14))
+                b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            b.setText(text)
+            if w: b.setFixedWidth(w)
+            else: b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            if checkable:
+                b.setCheckable(True); b.setChecked(checked)
+                b.toggled.connect(cb)
+            else:
+                b.clicked.connect(lambda _=False: cb())
+            return b
+
+        def _row(*widgets, spacing=3):  #vers 1
+            w = QWidget(); h = QHBoxLayout(w)
+            h.setContentsMargins(0,0,0,0); h.setSpacing(spacing)
+            for ww in widgets:
+                if isinstance(ww, int): h.addSpacing(ww)
+                elif ww == 'stretch':  h.addStretch()
+                else: h.addWidget(ww, 1)
+            return w
+
+        def _sep():  #vers 1
+            from PyQt6.QtWidgets import QFrame as _QF
+            s = _QF(); s.setFrameShape(_QF.Shape.HLine)
+            s.setFixedHeight(1)
+            s.setStyleSheet("background:#333;")
+            return s
+
+        def _lbl(text):  #vers 1
+            l = QLabel(text); l.setFont(self.panel_font)
+            return l
+
+        #    Render                                       
+        lay.addWidget(_lbl("Render"))
+        self._mode_group = QButtonGroup(self); self._mode_group.setExclusive(True)
+        mode_row = QWidget(); mode_h = QHBoxLayout(mode_row)
+        mode_h.setContentsMargins(0,0,0,0); mode_h.setSpacing(2)
+        for label, mode, iname in [("Wire","wireframe","wireframe"),
+                                    ("Solid","solid","solid"),
+                                    ("Tex","textured","texture")]:
+            b = _QTB(); b.setFont(self.infobar_font); b.setFixedHeight(26)
+            b.setToolTip(f"{mode.capitalize()} render mode")
+            ico = _icon(iname)
+            if ico: b.setIcon(ico); b.setIconSize(QSize(14,14))
+            b.setText(label)
+            b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            b.setCheckable(True); b.setChecked(mode=='solid')
+            b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            b.toggled.connect(lambda checked, m=mode: self._set_mode(m) if checked else None)
+            self._mode_group.addButton(b); mode_h.addWidget(b)
+        lay.addWidget(mode_row)
+
+        #    View toggles (Backface + Grid same row)       
+        self._cull_btn   = _tbtn("Backface", "Toggle backface culling",  self.viewport.set_backface_cull, 'backface', True, False)
+        self._grid_btn   = _tbtn("Grid",     "Toggle grid",              self.viewport.set_show_grid,     'grid',     True, True)
+        self._prelit_btn = _tbtn("PreLit",   "Vertex pre-lighting",      self.viewport.set_prelight,      'shading',  True, False)
+        lay.addWidget(_row(self._cull_btn, self._grid_btn))
+        lay.addWidget(self._prelit_btn)
+
+        lay.addWidget(_sep())
+
+        #    Camera + Light same row                       
+        _reset_btn = _tbtn("Reset", "Reset camera", self.viewport.reset_camera, 'reset')
+        _light_btn = _tbtn("Light", "Light setup",  self._light_setup_dialog,   'light')
+        lay.addWidget(_row(_reset_btn, _light_btn))
+
+        lay.addWidget(_sep())
+
+        #    Paint                                         
+        lay.addWidget(_lbl("Paint"))
+        self._paint1_btn = QPushButton("Pri")
+        self._paint2_btn = QPushButton("Sec")
+        for b in (self._paint1_btn, self._paint2_btn):
+            b.setFixedHeight(26); b.setFont(self.infobar_font)
+        self._paint1_btn.clicked.connect(self._pick_paint1)
+        self._paint2_btn.clicked.connect(self._pick_paint2)
+        lay.addWidget(_row(self._paint1_btn, self._paint2_btn))
+        self._update_paint_btns()
+
+        # Carcols swatches
+        self._carcols_widget = QWidget()
+        self._carcols_lay = QVBoxLayout(self._carcols_widget)
+        self._carcols_lay.setContentsMargins(0,0,0,2); self._carcols_lay.setSpacing(2)
+        lay.addWidget(self._carcols_widget)
+
+        lay.addWidget(_sep())
+
+        #    Assembly (3 buttons same row with icons)      
+        lay.addWidget(_lbl("Assembly"))
+        self._assemble_btn = _tbtn("All",    "Show all parts assembled", self._toggle_assembly_mode, 'mesh',     True, False)
+        self._damage_btn   = _tbtn("Damage", "Show damaged state",       self._toggle_damage_mode,   'warning',  True, False)
+        self._lod_btn      = _tbtn("LOD",    "Show LOD meshes",          self._toggle_lod_mode,      'zoom_out', True, False)
+        lay.addWidget(_row(self._assemble_btn, self._damage_btn, self._lod_btn))
+
+        lay.addWidget(_sep())
+
+        #    Animate: [Play] Speed [---x---] same row      
+        lay.addWidget(_lbl("Animate"))
+        self._anim_btn = _tbtn('Play', 'Start/stop animation',
+            lambda: self.viewport.set_animation(self._anim_btn.isChecked()),
+            'play', True, False)
+        self._anim_btn.setFixedWidth(54)
+        spd_slider = QSlider(Qt.Orientation.Horizontal)
+        spd_slider.setRange(1, 30); spd_slider.setValue(10)
+        spd_slider.setToolTip('Animation speed')
+        spd_slider.valueChanged.connect(lambda v: self.viewport.set_animation_speed(v/10.0))
+        self._anim_speed_slider = spd_slider
+        anim_row = QWidget(); anim_h = QHBoxLayout(anim_row)
+        anim_h.setContentsMargins(0,0,0,0); anim_h.setSpacing(4)
+        anim_h.addWidget(self._anim_btn)
+        spd_lbl = QLabel('Spd'); spd_lbl.setFont(self.infobar_font)
+        anim_h.addWidget(spd_lbl); anim_h.addWidget(spd_slider, 1)
+        lay.addWidget(anim_row)
+
+        # Door toggles row
+        door_row = QWidget(); door_h = QHBoxLayout(door_row)
+        door_h.setContentsMargins(0,0,0,0); door_h.setSpacing(2)
+        for dlabel, dname in [('LF','door_lf'),('RF','door_rf'),
+                               ('LR','door_lr'),('RR','door_rr'),
+                               ('Hood','bonnet'),('Boot','boot')]:
+            db = QPushButton(dlabel); db.setFixedHeight(22)
+            db.setFont(self.infobar_font); db.setToolTip(f'Toggle {dname}')
+            db.clicked.connect(lambda _=False, n=dname: self.viewport.toggle_door(n))
+            door_h.addWidget(db)
+        lay.addWidget(door_row)
+
+        lay.addWidget(_sep())
+
+        #    Wheels: [Show Wheels] Steer [--x--] same row  
+        self._wheels_btn = _tbtn("Wheels", "Show wheels at dummy positions",
+                                 self._toggle_show_wheels, 'mesh', True, False)
+        self._wheels_btn.setFixedWidth(70)
+        steer_slider = QSlider(Qt.Orientation.Horizontal)
+        steer_slider.setRange(-35, 35); steer_slider.setValue(0)
+        steer_slider.setToolTip('Front wheel steering angle')
+        steer_slider.valueChanged.connect(lambda v: self.viewport.set_wheel_heading(v))
+        self._wheel_heading_slider = steer_slider
+        wheel_row = QWidget(); wheel_h = QHBoxLayout(wheel_row)
+        wheel_h.setContentsMargins(0,0,0,0); wheel_h.setSpacing(4)
+        wheel_h.addWidget(self._wheels_btn)
+        steer_lbl = QLabel('Steer'); steer_lbl.setFont(self.infobar_font)
+        wheel_h.addWidget(steer_lbl); wheel_h.addWidget(steer_slider, 1)
+        lay.addWidget(wheel_row)
+
+        lay.addWidget(_sep())
+
+        #    Model Info (collapsible)                       
+        info_header = QWidget(); info_h = QHBoxLayout(info_header)
+        info_h.setContentsMargins(0,0,0,0); info_h.setSpacing(4)
+        info_toggle = _QTB(); info_toggle.setText("▸ Model Info")
+        info_toggle.setFont(self.infobar_font); info_toggle.setFixedHeight(22)
+        info_toggle.setCheckable(True); info_toggle.setChecked(False)
+        info_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        info_toggle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        info_h.addWidget(info_toggle)
+        lay.addWidget(info_header)
+
+        self._info_lbl = QLabel('—')
+        self._info_lbl.setFont(self.infobar_font)
+        self._info_lbl.setWordWrap(True)
+        self._info_lbl.setVisible(False)
+        self._info_lbl.setAlignment(Qt.AlignmentFlag.AlignTop)
+        lay.addWidget(self._info_lbl)
+
+        def _toggle_info(checked):  #vers 1
+            self._info_lbl.setVisible(checked)
+            info_toggle.setText(("▾" if checked else "▸") + " Model Info")
+        info_toggle.toggled.connect(_toggle_info)
+
+        lay.addWidget(_sep())
+
+        #    Edit Buttons (icon + text, collapse to icon-only when narrow)   
+        lay.addWidget(_lbl("Editing"))
+        edit_actions = [
+            ("CoM",     "Centre of Mass indicator",       self._toggle_com_indicator,  'target',   True),
+            ("Dummies", "Show dummy frame positions",     self._toggle_dummy_overlay,  'mesh',     True),
+            ("Susp",    "Suspension travel visualiser",  self._toggle_suspension_vis, 'bounds',   True),
+            ("Seats",   "Show seat positions",            self._toggle_seat_overlay,   'view',     True),
+            ("Bounds",  "Show bounding box",              self._toggle_bounds,         'wireframe',True),
+            ("Export",  "Export DFF geometry",            self._export_dff,            'export',   False),
+        ]
+        edit_row1 = QWidget(); er1 = QHBoxLayout(edit_row1)
+        edit_row1.setContentsMargins(0,0,0,0) if hasattr(edit_row1,'setContentsMargins') else None
+        er1.setContentsMargins(0,0,0,0); er1.setSpacing(2)
+        edit_row2 = QWidget(); er2 = QHBoxLayout(edit_row2)
+        er2.setContentsMargins(0,0,0,0); er2.setSpacing(2)
+        self._edit_btns = []
+        for i, (label, tip, cb, iname, checkable) in enumerate(edit_actions):
+            b = _QTB(); b.setFixedHeight(26)
+            b.setFont(self.infobar_font); b.setToolTip(tip)
+            ico = _icon(iname)
+            if ico:
+                b.setIcon(ico); b.setIconSize(QSize(14,14))
+                b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            b.setText(label)
+            b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            if checkable:
+                b.setCheckable(True)
+                b.toggled.connect(lambda checked, fn=cb: fn())
+            else:
+                b.clicked.connect(lambda _=False, fn=cb: fn())
+            self._edit_btns.append(b)
+            (er1 if i < 3 else er2).addWidget(b)
+        lay.addWidget(edit_row1)
+        lay.addWidget(edit_row2)
+
+        # Collapse edit buttons to icon-only when panel is narrow
+        def _on_panel_resize(event):  #vers 1
+            narrow = panel.width() < 170
+            style = Qt.ToolButtonStyle.ToolButtonIconOnly if narrow else Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+            for b in self._edit_btns:
+                if b.icon() and not b.icon().isNull():
+                    b.setToolButtonStyle(style)
+            QFrame.resizeEvent(panel, event)
+        panel.resizeEvent = _on_panel_resize
+
+        lay.addStretch()
+        return panel
         panel = QFrame(); panel.setFrameStyle(QFrame.Shape.StyledPanel)
         panel.setMinimumWidth(160); panel.setMaximumWidth(200)
         lay = QVBoxLayout(panel)
@@ -2179,7 +2747,7 @@ class _LayoutMixin:
         lay.setSpacing(4)
 
         ic = self._get_icon_color()
-        def _icon(name, size=16):
+        def _icon(name, size=16):  #vers 1
             if not ICONS_AVAILABLE: return None
             try:
                 fn = getattr(SVGIconFactory, name+'_icon', None)
@@ -2188,9 +2756,9 @@ class _LayoutMixin:
 
         from PyQt6.QtWidgets import QToolButton as _QTB
 
-        def _btn(text, tip, cb, iname=None, checkable=False, checked=False): #Vers 1
+        def _btn(text, tip, cb, iname=None, checkable=False, checked=False): #Vers 1  #vers 1
             b = _QTB(); b.setFont(self.panel_font)
-            b.setToolTip(tip); b.setFixedHeight(26)
+            b.setToolTip(tip); b.setFixedHeight(28)
             b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             ico = _icon(iname)
             if ico:
@@ -2251,8 +2819,8 @@ class _LayoutMixin:
         swatch_lay = QHBoxLayout(swatch_row)
         swatch_lay.setContentsMargins(0,0,0,0); swatch_lay.setSpacing(4)
 
-        self._paint1_btn = QPushButton("Primary")
-        self._paint2_btn = QPushButton("Secondary")
+        self._paint1_btn = QPushButton("Pri")
+        self._paint2_btn = QPushButton("Sec")
         for btn in (self._paint1_btn, self._paint2_btn):
             btn.setFixedHeight(28)
             btn.setFont(self.infobar_font)
@@ -2326,6 +2894,9 @@ class _LayoutMixin:
         #  Wheels
         lbl_w = QLabel('Wheels'); lbl_w.setFont(self.panel_font)
         lay.addWidget(lbl_w)
+        self._wheels_btn = _btn("Show Wheels", "Load and show wheels at dummy positions",
+                                self._toggle_show_wheels, None, True, False)
+        lay.addWidget(self._wheels_btn)
 
         from PyQt6.QtWidgets import QSlider
         self._wheel_heading_slider = QSlider(Qt.Orientation.Horizontal)
@@ -2356,7 +2927,7 @@ class _LayoutMixin:
 
 
 
-    def _populate_sidebar(self): #Vers 1
+    def _populate_sidebar(self): #Vers 1  #vers 1
         """Build the 2-col icon grid in the right sidebar.
         Override to change or extend the tool set.
         """
@@ -2364,25 +2935,25 @@ class _LayoutMixin:
         ic = self._get_icon_color()
         BTN = 36
 
-        def _nb(icon_fn, tip, slot, checkable=False):
+        def _nb(icon_fn, tip, slot, checkable=False): #vers 1
             b = QToolButton(); b.setFixedSize(BTN, BTN)
             try: b.setIcon(getattr(SVGIconFactory, icon_fn)(20, ic))
             except Exception: b.setText(tip[:2])
             b.setToolTip(tip); b.setCheckable(checkable)
             b.clicked.connect(slot); return b
 
-        def _row(*btns):
+        def _row(*btns): #vers 1
             row = QHBoxLayout()
             row.setSpacing(2); row.setContentsMargins(0, 0, 0, 0)
             for b in btns: row.addWidget(b)
             if len(btns) == 1: row.addStretch()
             sl.addLayout(row)
 
-        def _sep():
+        def _sep(): #vers 1
             s = QFrame(); s.setFrameShape(QFrame.Shape.HLine)
             sl.addSpacing(2); sl.addWidget(s); sl.addSpacing(2)
 
-        def _tool(icon_fn, tip, name):
+        def _tool(icon_fn, tip, name): #vers 1
             b = _nb(icon_fn, tip,
                     lambda checked=False, t=name: self._set_active_tool(t),
                     checkable=True)
@@ -2473,12 +3044,14 @@ class _LayoutMixin:
         from PyQt6.QtWidgets import QApplication
         from PyQt6.QtCore import Qt as _Qt
         name = entry.name
+        stem0, ext0 = os.path.splitext(name)
+        display_name = re.sub(r'_[a-z0-9]{6,12}$', '', stem0, flags=re.IGNORECASE) + ext0
         try:
             import tempfile
             # Show busy cursor + progress bar immediately
             QApplication.setOverrideCursor(_Qt.CursorShape.WaitCursor)
             self._show_progress(True)
-            self._set_status(f"Loading {name}…")
+            self._set_status(f"Loading {display_name}…")
             QApplication.processEvents()
 
             # Step 1: Extract DFF
@@ -2526,7 +3099,7 @@ class _LayoutMixin:
         vp = self.viewport
 
         # Light direction sliders
-        def _slider(lo, hi, val, scale=10):
+        def _slider(lo, hi, val, scale=10):  #vers 1
             s = QSlider(Qt.Orientation.Horizontal)
             s.setRange(int(lo*scale), int(hi*scale))
             s.setValue(int(val*scale))
@@ -2544,7 +3117,7 @@ class _LayoutMixin:
         la_lbl = QLabel(f"{vp._ambient:.2f}")
         ld_lbl = QLabel(f"{vp._diffuse:.2f}")
 
-        def _upd():
+        def _upd():  #vers 1
             x = sx.value()/10; y = sy.value()/10; z = sz.value()/10
             a = sa.value()/100; d = sd.value()/100
             lx_lbl.setText(f"{x:.1f}"); ly_lbl.setText(f"{y:.1f}"); lz_lbl.setText(f"{z:.1f}")
@@ -2553,7 +3126,7 @@ class _LayoutMixin:
 
         for s in (sx,sy,sz,sa,sd): s.valueChanged.connect(_upd)
 
-        def _row(lbl, slider, val_lbl):
+        def _row(lbl, slider, val_lbl):  #vers 1
             rw = QWidget(); rl = QHBoxLayout(rw); rl.setContentsMargins(0,0,0,0)
             rl.addWidget(slider,1); rl.addWidget(val_lbl)
             form.addRow(lbl, rw)
@@ -2571,14 +3144,14 @@ class _LayoutMixin:
         paint_grp = QGroupBox("Vehicle Paint Preview")
         paint_lay = QHBoxLayout(paint_grp)
 
-        def _colour_btn(label, current_rgb, setter):
-            def _to_qcolor(rgb):
+        def _colour_btn(label, current_rgb, setter):  #vers 1
+            def _to_qcolor(rgb):  #vers 1
                 from PyQt6.QtGui import QColor
                 return QColor(int(rgb[0]*255), int(rgb[1]*255), int(rgb[2]*255))
             btn = QPushButton(label)
             btn.setStyleSheet(f"background-color: rgb({int(current_rgb[0]*255)},{int(current_rgb[1]*255)},{int(current_rgb[2]*255)})")
             btn.setFixedHeight(28)
-            def _pick():
+            def _pick():  #vers 1
                 col = QColorDialog.getColor(_to_qcolor(setter.__self__._paint1 if 'paint1' in label.lower() or 'primary' in label.lower() else setter.__self__._paint2), dlg)
                 if col.isValid():
                     rgb = (col.redF(), col.greenF(), col.blueF())
@@ -2592,7 +3165,7 @@ class _LayoutMixin:
         p1_btn = QPushButton("Primary Paint")
         p1_btn.setStyleSheet(f"background-color: rgb({int(vp._paint1[0]*255)},{int(vp._paint1[1]*255)},{int(vp._paint1[2]*255)})")
         p1_btn.setFixedHeight(28)
-        def _pick1():
+        def _pick1():  #vers 1
             from PyQt6.QtGui import QColor
             col = QColorDialog.getColor(QColor(int(vp._paint1[0]*255),int(vp._paint1[1]*255),int(vp._paint1[2]*255)), dlg)
             if col.isValid():
@@ -2604,7 +3177,7 @@ class _LayoutMixin:
         p2_btn = QPushButton("Secondary Paint")
         p2_btn.setStyleSheet(f"background-color: rgb({int(vp._paint2[0]*255)},{int(vp._paint2[1]*255)},{int(vp._paint2[2]*255)})")
         p2_btn.setFixedHeight(28)
-        def _pick2():
+        def _pick2():  #vers 1
             from PyQt6.QtGui import QColor
             col = QColorDialog.getColor(QColor(int(vp._paint2[0]*255),int(vp._paint2[1]*255),int(vp._paint2[2]*255)), dlg)
             if col.isValid():
@@ -2617,7 +3190,7 @@ class _LayoutMixin:
         lay.addWidget(paint_grp)
 
         reset_btn = QPushButton("Reset Defaults")
-        def _reset():
+        def _reset():  #vers 1
             sx.setValue(10); sy.setValue(20); sz.setValue(15)
             sa.setValue(30); sd.setValue(85)
             vp._paint1 = (0.80, 0.20, 0.20)
@@ -2647,7 +3220,9 @@ class _LayoutMixin:
         for i,f in enumerate(frames):
             name = f.name or f'frame_{i}'
             item = QTreeWidgetItem([name])
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setFlags(Qt.ItemFlag.ItemIsUserCheckable |
+                          Qt.ItemFlag.ItemIsEnabled |
+                          Qt.ItemFlag.ItemIsSelectable)
             item.setCheckState(0, Qt.CheckState.Checked)
             item.setData(0, Qt.ItemDataRole.UserRole, name.lower())
             items[i] = item
@@ -2660,20 +3235,29 @@ class _LayoutMixin:
         tree.expandAll()
         tree.blockSignals(False)
 
-    def _on_frame_visibility_changed(self, item, col): #vers 1
+    def _on_frame_visibility_changed(self, item, col): #vers 2
         from PyQt6.QtCore import Qt
         name = item.data(0, Qt.ItemDataRole.UserRole) or ''
-        if not hasattr(self.viewport,'_hidden_frames'):
+        checked = item.checkState(0) == Qt.CheckState.Checked
+        print(f"[FrameTree] {name!r} checked={checked}")
+        if not hasattr(self.viewport, '_hidden_frames'):
             self.viewport._hidden_frames = set()
         if item.checkState(0) == Qt.CheckState.Checked:
             self.viewport._hidden_frames.discard(name)
         else:
             self.viewport._hidden_frames.add(name)
-        # Rebuild assembly if active
-        if getattr(self,'_assemble_btn',None) and self._assemble_btn.isChecked():
-            self._toggle_assembly_mode(True)
-        else:
-            self.viewport.update()
+        # Always rebuild — hidden_frames filter is applied in load_all_geometries
+        m = getattr(self, '_dff_model', None)
+        if m and m.frames and m.atomics:
+            vp = self.viewport
+            # Save camera state — don't reset view on visibility toggle
+            cam = (vp._yaw, vp._pitch, vp._dist, vp._pan_x, vp._pan_y)
+            vp.load_all_geometries(
+                m.geometries, [g.materials for g in m.geometries],
+                m.frames, m.atomics,
+                damaged=getattr(self, '_damage_mode', False))
+            vp._yaw, vp._pitch, vp._dist, vp._pan_x, vp._pan_y = cam
+        self.viewport.update()
 
     def _populate_geom_list(self): #vers 1
 
@@ -2688,15 +3272,28 @@ class _LayoutMixin:
             self._geom_list.addItem(f"[{i}] {name}  {len(g.vertices)}v {len(g.triangles)}t")
 
 
-    def _on_geom_selected(self, row: int): #vers 2
+    def _on_geom_selected(self, row: int): #vers 5
         if not self._dff_model or row < 0 or row >= len(self._dff_model.geometries): return
         self._current_geom = row
-        g = self._dff_model.geometries[row]
-        self.viewport.load_geometry(g, g.materials)
-        # Ensure GL context is initialized before rendering
+        m = self._dff_model
+        g = m.geometries[row]
+        damaged = getattr(self, '_damage_mode', False)
+        def _do_load():  #vers 1
+            if m.frames and m.atomics:
+                self.viewport.load_all_geometries(
+                    m.geometries, [geom.materials for geom in m.geometries],
+                    m.frames, m.atomics, damaged=damaged)
+                if not getattr(self.viewport, '_all_geoms', None) and not self.viewport._vertices:
+                    self.viewport.load_geometry(g, g.materials)
+            else:
+                self.viewport.load_geometry(g, g.materials)
+            self.viewport.update()
         from PyQt6.QtCore import QTimer
-        if not self.viewport.isValid():
-            QTimer.singleShot(100, lambda: self.viewport.update())
+        # Defer so GL context is initialized before first render
+        if hasattr(self.viewport, 'isValid') and not self.viewport.isValid():
+            QTimer.singleShot(150, _do_load)
+        else:
+            _do_load()
         has_prelit = bool(g.colors)
         self._prelit_btn.setEnabled(has_prelit)
         self._info_lbl.setText(
@@ -2722,10 +3319,10 @@ class _LogicStubsMixin:
     """
 
     #    ToolMenuMixin protocol
-    def get_menu_title(self) -> str:
+    def get_menu_title(self) -> str: #vers 1
         return self.App_name
 
-    def _build_menus_into_qmenu(self, pm):
+    def _build_menus_into_qmenu(self, pm): #vers 1
         """Override to populate File / Edit / View menus for your app."""
         fm = pm.addMenu("File")
         fm.addAction("Open…  Ctrl+O",  self._open_file)
@@ -2754,42 +3351,44 @@ class _LogicStubsMixin:
         vm.addAction("About " + self.App_name, self._show_about)
 
     #    File operations
-    def _open_file(self, path=None):   pass   # override: load your format
-    def _save_file(self):              pass   # override: save your format
-    def _export_file(self):
+    def _open_file(self, path=None):   pass   # override: load your format  #vers 1
+    def _save_file(self):              pass   # override: save your format  #vers 1
+    def _export_file(self): #vers 1
         QMessageBox.information(self, "Export", "Export not yet implemented.")
-    def _import_file(self):
+    def _import_file(self): #vers 1
         QMessageBox.information(self, "Import", "Import not yet implemented.")
-    def _clear_recent(self):
+    def _clear_recent(self): #vers 1
         self.WS._data["recent_files"] = []; self.WS.save()
         self._set_status("Recent files cleared")
 
     #    Edit operations
-    def _undo(self):         self._set_status("Undo — override in subclass")
-    def _redo(self):         self._set_status("Redo — override in subclass")
-    def _copy_item(self):    pass   # override: copy selection
-    def _paste_item(self):   pass   # override: paste clipboard
+    def _undo(self):         self._set_status("Undo — override in subclass")  #vers 1
+    def _redo(self):         self._set_status("Redo — override in subclass")  #vers 1
+    def _copy_item(self):    pass   # override: copy selection  #vers 1
+    def _paste_item(self):   pass   # override: paste clipboard  #vers 1
 
     #    View operations
-    def _zoom(self, factor: float): pass   # override: zoom your canvas
-    def _fit(self):                 pass   # override: fit view
-    def _jump(self):                pass   # override: jump to selection
+    def _zoom(self, factor: float): pass   # override: zoom your canvas  #vers 1
+    def _fit(self):                 pass   # override: fit view  #vers 1
+    def _jump(self):                pass   # override: jump to selection  #vers 1
 
     #    Panel callbacks
-    def _on_list_selection_changed(self, row: int): pass
-    def _on_tab_changed(self, idx: int):            pass
-    def _on_add_item(self):
+    def _on_list_selection_changed(self, row: int): pass  #vers 1
+    def _on_tab_changed(self, idx: int):            pass  #vers 1
+    def _on_add_item(self):  #vers 1
         self._item_list.addItem(
             QListWidgetItem(f"Item {self._item_list.count()}"))
-    def _on_remove_item(self):
+
+    def _on_remove_item(self): #vers 1
         row = self._item_list.currentRow()
         if row >= 0: self._item_list.takeItem(row)
 
     #    Toolbar actions
-    def _on_toolbar_action(self, action: str): pass  # rotate/flip/edit etc.
+    def _on_toolbar_action(self, action: str): #vers 1
+        pass  # rotate/flip/edit etc.
 
     #    Tool management
-    def _set_active_tool(self, tool: str):
+    def _set_active_tool(self, tool: str): #vers 1
         self._active_tool = tool
         for name, btn in self._draw_btns.items():
             btn.setChecked(name == tool)
@@ -2817,7 +3416,7 @@ class GUIWorkshop(_ToolbarMixin, _LayoutMixin, _LogicStubsMixin,
     window_closed   = pyqtSignal()
 
     #    Init
-    def __init__(self, parent=None, main_window=None):
+    def __init__(self, parent=None, main_window=None): #vers 1
         super().__init__(parent)
         self.main_window     = main_window
         self.standalone_mode = (main_window is None)
@@ -2886,7 +3485,7 @@ class GUIWorkshop(_ToolbarMixin, _LayoutMixin, _LogicStubsMixin,
         self._setup_shortcuts()
         self._apply_theme()
 
-    def _load_fonts_from_settings(self):
+    def _load_fonts_from_settings(self): #vers 1
         ws = self.WS
         self.title_font   = QFont(ws.get("font_title_family",  "Arial"),
                                   ws.get("font_title_size",     14))
@@ -2898,15 +3497,15 @@ class GUIWorkshop(_ToolbarMixin, _LayoutMixin, _LogicStubsMixin,
                                   ws.get("font_info_size",       9))
         self.button_display_mode = ws.get("button_display_mode", "both")
 
-    def get_content_margins(self):
+    def get_content_margins(self): #vers 1
         return (self.contmergina, self.contmerginb,
                 self.contmerginc, self.contmergind)
 
-    def get_panel_margins(self):
+    def get_panel_margins(self): #vers 1
         return (self.panelmergina, self.panelmerginb,
                 self.panelmerginc, self.panelmergind)
 
-    def _setup_shortcuts(self):
+    def _setup_shortcuts(self): #vers 1
         for key, fn in [("Ctrl+O", self._open_file), ("Ctrl+S", self._save_file),
                         ("Ctrl+Z", self._undo), ("Ctrl+Y", self._redo),
                         ("Ctrl+Shift+Z", self._redo), ("Ctrl+0", self._fit),
@@ -2921,7 +3520,9 @@ class GUIWorkshop(_ToolbarMixin, _LayoutMixin, _LogicStubsMixin,
 
 
     #    Window chrome
-    def _get_resize_corner(self, pos): #Vers 1
+    def _get_resize_corner(self, pos): #Vers 2  #vers 1
+        if not self.standalone_mode:           # docked: no corner resize
+            return None
         s = self.corner_size; x, y = pos.x(), pos.y()
         w, h = self.width(), self.height()
         if x < s and y < s:    return "top-left"
@@ -2931,7 +3532,7 @@ class GUIWorkshop(_ToolbarMixin, _LayoutMixin, _LogicStubsMixin,
         return None
 
 
-    def _update_cursor(self, direction): #Vers 2
+    def _update_cursor(self, direction): #Vers 2  #vers 1
         cursors = {
             "top":          Qt.CursorShape.SizeVerCursor,
             "bottom":       Qt.CursorShape.SizeVerCursor,
@@ -3010,7 +3611,7 @@ class GUIWorkshop(_ToolbarMixin, _LayoutMixin, _LogicStubsMixin,
         self.drag_position = global_pos
 
 
-    def _is_on_draggable_area(self, pos): #Vers 1
+    def _is_on_draggable_area(self, pos): #Vers 1  #vers 1
         if not hasattr(self, 'titlebar'):
             return False
         if not self.titlebar.rect().contains(pos):
@@ -3042,15 +3643,16 @@ class GUIWorkshop(_ToolbarMixin, _LayoutMixin, _LogicStubsMixin,
         super().mousePressEvent(ev)
 
 
-    def _toggle_maximize(self): #Vers 1
+    def _toggle_maximize(self): #Vers 1  #vers 1
         if self.isMaximized(): self.showNormal()
         else: self.showMaximized()
 
 
-    def toggle_dock_mode(self): pass  # override if dock support needed
+    def toggle_dock_mode(self): #vers 1
+        pass  # override if dock support needed
 
 
-    def mouseReleaseEvent(self, event): #Vers 2
+    def mouseReleaseEvent(self, event): #Vers 2  #vers 1
         if event.button() == Qt.MouseButton.LeftButton:
             self.dragging = self.resizing = False
             self.resize_corner = None
@@ -3058,7 +3660,7 @@ class GUIWorkshop(_ToolbarMixin, _LayoutMixin, _LogicStubsMixin,
             event.accept()
 
 
-    def _handle_corner_resize(self, global_pos): #Vers 1
+    def _handle_corner_resize(self, global_pos): #Vers 1  #vers 1
         if not self.resize_corner or not self.drag_position:
             return
         delta = global_pos - self.drag_position
@@ -3090,7 +3692,7 @@ class GUIWorkshop(_ToolbarMixin, _LayoutMixin, _LogicStubsMixin,
                 self.setGeometry(nx, ny, nw, nh)
 
 
-    def paintEvent(self, event): #Vers 2
+    def paintEvent(self, event): #Vers 2  #vers 1
         super().paintEvent(event)
         # Corner handles drawn by _corner_overlay — see _setup_corner_overlay
 
@@ -3130,7 +3732,16 @@ class GUIWorkshop(_ToolbarMixin, _LayoutMixin, _LogicStubsMixin,
         if hasattr(self,'size_grip'): self.size_grip.move(self.width()-16,self.height()-16)
         self._refresh_corner_overlay()
 
-    def closeEvent(self, event): #Vers 2
+    def closeEvent(self, event): #Vers 3  #vers 1
+        # Stop any running timers before widget is destroyed
+        try:
+            if hasattr(self, '_anim_timer') and self._anim_timer:
+                self._anim_timer.stop(); self._anim_timer = None
+        except Exception: pass
+        try:
+            if hasattr(self, '_shared_txd_worker') and self._shared_txd_worker:
+                self._shared_txd_worker.quit()
+        except Exception: pass
         # Save window geometry
         if self.standalone_mode:
             g = self.geometry()
@@ -3142,144 +3753,29 @@ class GUIWorkshop(_ToolbarMixin, _LayoutMixin, _LogicStubsMixin,
         self.window_closed.emit()
         event.accept()
 
-# carcols.dat parser
+# carcols.dat / carmods.dat: byte-exact models in apps/methods/vehicle_data_files.py
+from apps.methods.vehicle_data_files import (
+    CarColour as _CarColourBase, CarColEntry, CarModEntry, CarColsFile, CarModsFile)
+from apps.methods.img_factory_settings import get_user_config_dir
 
-@dataclass
-class CarColour: #vers 1
-    r: int = 0
-    g: int = 0
-    b: int = 0
 
-    def to_qcolor(self) -> QColor:
+class CarColour(_CarColourBase): #vers 2
+    def to_qcolor(self) -> QColor:  #vers 1
         return QColor(self.r, self.g, self.b)
 
-    def __str__(self):
-        return f"{self.r},{self.g},{self.b}"
 
-
-@dataclass
-class CarColEntry: #vers 1
-    name:     str                    = ""
-    palettes: List[Tuple[int, int]]  = field(default_factory=list)
-
-
-class CarColsParser: #vers 1
+class CarColsParser(CarColsFile): #vers 2
     def __init__(self): #vers 1
-        self.colours:      List[CarColour]   = []
-        self.vehicles:     List[CarColEntry] = []
-        self.header_lines: List[str]         = []
-        self.game:         str               = "VC"
-
-    def _detect_game(self, lines: List[str]) -> str: #vers 1
-        for ln in lines:
-            s = ln.strip()
-            if s.lower().startswith("col") and not s.startswith(";"):
-                if len(s.split()) > 15:
-                    return "SA"
-        return "VC"
-
-    def load(self, path: str) -> bool: #vers 1
-        try:
-            self.colours.clear(); self.vehicles.clear(); self.header_lines.clear()
-            with open(path, "r", encoding="latin-1") as f:
-                lines = f.readlines()
-            self.game = self._detect_game(lines)
-            in_col = False
-            for ln in lines:
-                s = ln.strip()
-                if not s or s.startswith(";"):
-                    if not in_col: self.header_lines.append(ln)
-                    continue
-                parts = s.split()
-                if not parts: continue
-                # Colour palette row: "R,G,B"
-                if not parts[0].lower().startswith("col") and not in_col:
-                    try:
-                        rgb = parts[0].split(",")
-                        if len(rgb) == 3:
-                            self.colours.append(CarColour(int(rgb[0]), int(rgb[1]), int(rgb[2])))
-                            continue
-                        elif len(parts) >= 3 and all(p.isdigit() for p in parts[:3]):
-                            self.colours.append(CarColour(int(parts[0]), int(parts[1]), int(parts[2])))
-                            continue
-                    except (ValueError, IndexError):
-                        pass
-                if parts[0].lower() in ("col", "car2"):
-                    in_col = True
-                    if len(parts) < 2: continue
-                    entry = CarColEntry(name=parts[1])
-                    for pair_str in parts[2:]:
-                        try:
-                            pair = pair_str.split(",")
-                            if len(pair) == 2:
-                                entry.palettes.append((int(pair[0]), int(pair[1])))
-                        except ValueError:
-                            pass
-                    self.vehicles.append(entry)
-            return True
-        except Exception as ex:
-            print(f"CarColsParser.load: {ex}"); return False
-
-    def save(self, path: str) -> bool: #vers 1
-        try:
-            with open(path, "w", encoding="latin-1") as f:
-                for ln in self.header_lines: f.write(ln)
-                for c in self.colours: f.write(f"{c.r},{c.g},{c.b}\n")
-                f.write("\n")
-                for v in self.vehicles:
-                    pairs = "   ".join(f"{p},{s}" for p, s in v.palettes)
-                    f.write(f"col   {v.name}   {pairs}\n")
-            return True
-        except Exception as ex:
-            print(f"CarColsParser.save: {ex}"); return False
+        super().__init__(CarColour)
 
 
-# carmods.dat parser
-
-@dataclass
-class CarModEntry: #vers 1
-    vehicle: str       = ""
-    mods:    List[str] = field(default_factory=list)
-
-
-class CarModsParser: #vers 1
-    def __init__(self): #vers 1
-        self.entries:      List[CarModEntry] = []
-        self.header_lines: List[str]         = []
-
-    def load(self, path: str) -> bool: #vers 1
-        try:
-            self.entries.clear(); self.header_lines.clear()
-            in_data = False
-            with open(path, "r", encoding="latin-1") as f:
-                for ln in f:
-                    s = ln.strip()
-                    if not s or s.startswith(";") or s.startswith("#"):
-                        if not in_data: self.header_lines.append(ln)
-                        continue
-                    in_data = True
-                    parts = s.split()
-                    if parts:
-                        self.entries.append(CarModEntry(vehicle=parts[0], mods=parts[1:]))
-            return True
-        except Exception as ex:
-            print(f"CarModsParser.load: {ex}"); return False
-
-    def save(self, path: str) -> bool: #vers 1
-        try:
-            with open(path, "w", encoding="latin-1") as f:
-                for ln in self.header_lines: f.write(ln)
-                for e in self.entries:
-                    f.write(f"{e.vehicle}   {chr(32).join(e.mods)}\n")
-            return True
-        except Exception as ex:
-            print(f"CarModsParser.save: {ex}"); return False
+CarModsParser = CarModsFile
 
 
 # Colour swatch grid
 
 class ColourSwatchGrid(QWidget): #vers 1
-    def __init__(self, parent=None):
+    def __init__(self, parent=None):  #vers 1
         super().__init__(parent)
         self._palette:  List[CarColour] = []
         self._selected: int = -1
@@ -3319,13 +3815,13 @@ class ColourSwatchGrid(QWidget): #vers 1
             self.update()
             self.colour_clicked(idx)
 
-    def colour_clicked(self, idx: int): pass  # override
+    def colour_clicked(self, idx: int): pass  # override  #vers 1
 
 
 # Tab 1 — Handling
 
 class HandlingTab(QWidget): #vers 1
-    def __init__(self, parent=None):
+    def __init__(self, parent=None):  #vers 1
         super().__init__(parent)
         self._parser   = HandlingParser() if _HANDLING_AVAILABLE else None
         self._cur_idx  = -1
@@ -3333,7 +3829,35 @@ class HandlingTab(QWidget): #vers 1
         self._field_widgets: Dict[str, QWidget] = {}
         self._stat_bars:     Dict[str, tuple]   = {}
         self._flag_labels:   Dict[int, QLabel]  = {}
+        self._fields = VC_FIELDS
         self._build_ui()
+
+    def _fill_form(self, fields): #vers 1
+        self._fields = fields
+        while self._form.rowCount():
+            self._form.removeRow(0)
+        self._field_widgets.clear()
+        for fname, ftype, fmin, fmax, tip in fields:
+            lbl = QLabel(fname); lbl.setToolTip(tip); lbl.setFixedWidth(200)
+            if ftype == "float":
+                w = QDoubleSpinBox(); w.setRange(float(fmin), float(fmax)); w.setDecimals(4); w.setSingleStep(0.01)
+                w.valueChanged.connect(lambda v, n=fname: self._changed(n, v))
+            elif ftype == "int":
+                w = QSpinBox(); w.setRange(int(fmin), int(fmax))
+                w.valueChanged.connect(lambda v, n=fname: self._changed(n, v))
+            elif ftype == "bool":
+                w = QCheckBox()
+                w.stateChanged.connect(lambda v, n=fname: self._changed(n, int(v > 0)))
+            elif 'DriveType' in fname or 'EngineType' in fname:
+                w = QComboBox()
+                w.addItems(["F", "R", "4"] if 'DriveType' in fname else ["P", "D", "E"])
+                w.currentTextChanged.connect(lambda v, n=fname: self._changed(n, v))
+            else:
+                w = QLineEdit()
+                w.textChanged.connect(lambda v, n=fname: self._changed(n, v))
+            w.setToolTip(tip)
+            self._field_widgets[fname] = w
+            self._form.addRow(lbl, w)
 
     def _build_ui(self): #vers 1
         root = QHBoxLayout(self); root.setContentsMargins(4, 4, 4, 4)
@@ -3356,7 +3880,7 @@ class HandlingTab(QWidget): #vers 1
                 ("Del", "Delete entry",    self._delete, "delete"),
                 ("Dup", "Duplicate entry", self._dup,    "duplicate")]:
             from PyQt6.QtWidgets import QToolButton
-            b = QToolButton(); b.setFixedHeight(24); b.setToolTip(tip)
+            b = QToolButton(); b.setFixedHeight(28); b.setToolTip(tip)
             b.setText(lbl)
             try:
                 ico = getattr(SVGIconFactory, f'{iname}_icon', None)
@@ -3370,32 +3894,14 @@ class HandlingTab(QWidget): #vers 1
             b.clicked.connect(fn); br.addWidget(b)
         ll.addLayout(br)
         sp.addWidget(left)
+
         # Centre
         scroll = QScrollArea(); scroll.setWidgetResizable(True)
         ctr = QWidget(); scroll.setWidget(ctr)
         self._form = QFormLayout(ctr); self._form.setSpacing(3); self._form.setContentsMargins(6,6,6,6)
-        for fname, ftype, fmin, fmax, tip in VC_FIELDS:
-            lbl = QLabel(fname); lbl.setToolTip(tip); lbl.setFixedWidth(200)
-            if ftype == "float":
-                w = QDoubleSpinBox(); w.setRange(float(fmin), float(fmax)); w.setDecimals(4); w.setSingleStep(0.01)
-                w.valueChanged.connect(lambda v, n=fname: self._changed(n, v))
-            elif ftype == "int":
-                w = QSpinBox(); w.setRange(int(fmin), int(fmax))
-                w.valueChanged.connect(lambda v, n=fname: self._changed(n, v))
-            elif ftype == "bool":
-                w = QCheckBox()
-                w.stateChanged.connect(lambda v, n=fname: self._changed(n, int(v > 0)))
-            elif ftype == "char":
-                w = QComboBox()
-                w.addItems(["F","R","4"] if fname == "DriveType" else ["P","D","E"])
-                w.currentTextChanged.connect(lambda v, n=fname: self._changed(n, v))
-            else:
-                w = QLineEdit()
-                w.textChanged.connect(lambda v, n=fname: self._changed(n, v))
-            w.setToolTip(tip)
-            self._field_widgets[fname] = w
-            self._form.addRow(lbl, w)
+        self._fill_form(VC_FIELDS)
         sp.addWidget(scroll)
+
         # Right
         right = QWidget(); rl = QVBoxLayout(right); rl.setContentsMargins(2,2,2,2)
         rl.addWidget(QLabel("Vehicle Stats"))
@@ -3419,10 +3925,23 @@ class HandlingTab(QWidget): #vers 1
     def load_file(self, path: str) -> bool: #vers 1
         if not self._parser: return False
         ok = self._parser.load(path)
-        if ok: self._refresh_list()
+        if ok:
+            n = max((len(e.values) for e in self._parser.entries), default=0)
+            hf = header_fields(self._parser._lines)
+            if hf and len(hf) != n:
+                hf = hf[:22]
+            base = hf[:n] if hf else VC_FIELDS[:n]
+            self._fill_form(list(base) + [(f"Field {i + 1}", "str", "", "", "Not labelled - edit as text")
+                                          for i in range(len(base), n)])
+            self._cur_idx = -1
+            self._refresh_list()
         return ok
 
-    def save_file(self, path: str) -> bool: #vers 1
+    @property
+    def dirty(self) -> bool:
+        return bool(self._parser and self._parser.dirty)
+
+    def save_file(self, path: str) -> bool: #vers 2
         return self._parser.save(path) if self._parser else False
 
     def _refresh_list(self, ft: str = ""): #vers 1
@@ -3441,7 +3960,7 @@ class HandlingTab(QWidget): #vers 1
 
     def _populate(self, entry): #vers 1
         self._blocking = True
-        for i, (fname, ftype, *_) in enumerate(VC_FIELDS):
+        for i, (fname, ftype, *_) in enumerate(self._fields):
             if i >= len(entry.values): break
             w = self._field_widgets.get(fname)
             if not w: continue
@@ -3459,12 +3978,12 @@ class HandlingTab(QWidget): #vers 1
     def _changed(self, fname, value): #vers 1
         if self._blocking or self._cur_idx < 0: return
         entry = self._parser.entries[self._cur_idx]
-        for i, (fn, *_) in enumerate(VC_FIELDS):
+        for i, (fn, *_) in enumerate(self._fields):
             if fn == fname and i < len(entry.values): entry.values[i] = str(value); break
         self._update_stats(entry)
 
     def _update_stats(self, entry): #vers 1
-        fm = {f[0]: i for i, f in enumerate(VC_FIELDS)}
+        fm = {f[0]: i for i, f in enumerate(self._fields)}
         for fn, (bar, mx) in self._stat_bars.items():
             idx = fm.get(fn)
             if idx is not None and idx < len(entry.values):
@@ -3482,7 +4001,7 @@ class HandlingTab(QWidget): #vers 1
         if not self._parser: return
         tmpl = self._parser.entries[0].values[:] if self._parser.entries else ["NEWVEHICLE"]+["0.0"]*36
         tmpl[0] = "NEWVEHICLE"
-        e = HandlingEntry(); e.values = tmpl
+        e = HandlingEntry(tmpl)
         self._parser.entries.append(e); self._refresh_list(self._search.text())
         self._veh_list.setCurrentRow(self._veh_list.count()-1)
 
@@ -3496,14 +4015,14 @@ class HandlingTab(QWidget): #vers 1
     def _dup(self): #vers 1
         if self._cur_idx < 0 or not self._parser: return
         src = self._parser.entries[self._cur_idx]
-        e = HandlingEntry(); e.values = src.values[:]; e.values[0] = src.values[0]+"_COPY"
+        e = src.copy_as_new(); e.values[0] = src.values[0]+"_COPY"
         self._parser.entries.insert(self._cur_idx+1, e); self._refresh_list(self._search.text())
 
 
 # Tab 2 — Car Colours
 
 class CarColoursTab(QWidget): #vers 1
-    def __init__(self, parent=None):
+    def __init__(self, parent=None):  #vers 1
         super().__init__(parent)
         self._parser  = CarColsParser()
         self._cur_veh = -1
@@ -3526,14 +4045,14 @@ class CarColoursTab(QWidget): #vers 1
         br = QHBoxLayout()
         for lbl, tip, fn, iname in [("Add",'Add',self._add_vehicle,'add'),("Del",'Delete',self._delete_vehicle,'delete')]:
             from PyQt6.QtWidgets import QToolButton
-            b=QToolButton(); b.setFixedHeight(24); b.setToolTip(tip); b.setText(lbl)
+            b=QToolButton(); b.setFixedHeight(28); b.setToolTip(tip); b.setText(lbl)
             try:
                 ico=getattr(SVGIconFactory,f'{iname}_icon',None)
                 if ico: b.setIcon(ico(14,'#ffffff')); b.setIconSize(QSize(14,14)); b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
             except Exception: pass
             b.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Fixed)
 
-            b=QPushButton(lbl); b.setFixedHeight(24); b.clicked.connect(fn); br.addWidget(b)
+            b=QPushButton(lbl); b.setFixedHeight(26); b.clicked.connect(fn); br.addWidget(b)
         ll.addLayout(br)
         sp.addWidget(left)
 
@@ -3553,7 +4072,7 @@ class CarColoursTab(QWidget): #vers 1
         cl.addWidget(self._pairs)
         pr = QHBoxLayout()
         for lbl, fn in [("Add Pair",self._add_pair),("Remove Pair",self._remove_pair)]:
-            b=QPushButton(lbl); b.setFixedHeight(24); b.clicked.connect(fn); pr.addWidget(b)
+            b=QPushButton(lbl); b.setFixedHeight(28); b.clicked.connect(fn); pr.addWidget(b)
         cl.addLayout(pr)
         sp.addWidget(centre)
 
@@ -3578,7 +4097,11 @@ class CarColoursTab(QWidget): #vers 1
             self._refresh_veh_list()
         return ok
 
-    def save_file(self, path: str) -> bool: #vers 1
+    @property
+    def dirty(self) -> bool:
+        return self._parser.dirty
+
+    def save_file(self, path: str) -> bool: #vers 2
         return self._parser.save(path)
 
     def _refresh_veh_list(self, ft: str = ""): #vers 1
@@ -3653,7 +4176,7 @@ class CarColoursTab(QWidget): #vers 1
 # Tab 3 — Car Mods (SA only)
 
 class CarModsTab(QWidget): #vers 1
-    def __init__(self, parent=None):
+    def __init__(self, parent=None):  #vers 1
         super().__init__(parent)
         self._parser  = CarModsParser()
         self._cur_idx = -1
@@ -3671,14 +4194,14 @@ class CarModsTab(QWidget): #vers 1
         br = QHBoxLayout()
         for lbl, tip, fn, iname in [("Add",'Add',self._add_vehicle,'add'),("Del",'Delete',self._delete_vehicle,'delete')]:
             from PyQt6.QtWidgets import QToolButton
-            b=QToolButton(); b.setFixedHeight(24); b.setToolTip(tip); b.setText(lbl)
+            b=QToolButton(); b.setFixedHeight(28); b.setToolTip(tip); b.setText(lbl)
             try:
                 ico=getattr(SVGIconFactory,f'{iname}_icon',None)
                 if ico: b.setIcon(ico(14,'#ffffff')); b.setIconSize(QSize(14,14)); b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
             except Exception: pass
             b.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Fixed)
 
-            b=QPushButton(lbl); b.setFixedHeight(24); b.clicked.connect(fn); br.addWidget(b)
+            b=QPushButton(lbl); b.setFixedHeight(28); b.clicked.connect(fn); br.addWidget(b)
         ll.addLayout(br); sp.addWidget(left)
         right = QWidget(); rl = QVBoxLayout(right); rl.setContentsMargins(4,4,4,4)
         rl.addWidget(QLabel("Mod Slots"))
@@ -3688,7 +4211,7 @@ class CarModsTab(QWidget): #vers 1
         mr = QHBoxLayout()
         self._new_mod = QLineEdit(); self._new_mod.setPlaceholderText("mod_model_name"); mr.addWidget(self._new_mod)
         for lbl, fn in [("Add",self._add_mod),("Remove",self._remove_mod)]:
-            b=QPushButton(lbl); b.setFixedHeight(24); b.clicked.connect(fn); mr.addWidget(b)
+            b=QPushButton(lbl); b.setFixedHeight(28); b.clicked.connect(fn); mr.addWidget(b)
         rl.addLayout(mr); sp.addWidget(right)
         sp.setSizes([250,600]); root.addWidget(sp)
 
@@ -3697,7 +4220,11 @@ class CarModsTab(QWidget): #vers 1
         if ok: self._refresh_list()
         return ok
 
-    def save_file(self, path: str) -> bool: #vers 1
+    @property
+    def dirty(self) -> bool:
+        return self._parser.dirty
+
+    def save_file(self, path: str) -> bool: #vers 2
         return self._parser.save(path)
 
     def _refresh_list(self, ft: str = ""): #vers 1
@@ -3746,11 +4273,16 @@ class CarModsTab(QWidget): #vers 1
 
 
 # Main workshop
-class VehicleWorkshop(GLViewportMixin, GUIWorkshop): #vers 3
+class VehicleWorkshop(RibbonMixin, GLViewportMixin, GUIWorkshop): #vers 4
+    _ribbon_name = "vehicle_workshop"
+    # Bump when the set of ribbons changes (1 = File ribbon)
+    _RIBBON_LAYOUT_VERSION = 1
 
-    def __init__(self, main_window=None, parent=None): #vers 4
-        super().__init__(parent)
+    def __init__(self, main_window=None, parent=None): #vers 6
+        super().__init__(parent, main_window=main_window)   # docked: no corner handles
         self.main_window = main_window
+        self.__dict__.setdefault('_dff_model', None)        # set on DFF load
+        self.__dict__.setdefault('_current_dff_path', None)
         self._handling_path: Optional[str] = None
         self._carcols_path:  Optional[str] = None
         self._carmods_path:  Optional[str] = None
@@ -3767,17 +4299,48 @@ class VehicleWorkshop(GLViewportMixin, GUIWorkshop): #vers 3
         self._tab_handling = HandlingTab()
         self._tab_carcols  = CarColoursTab()
         self._tab_carmods  = CarModsTab()
-        self._tab_preview = self._create_preview_tab()
-        self._tabs.addTab(self._tab_preview, "3D Preview")
+        self._tab_preview = self._create_preview_tab() #TODO this seems bugged, does not show self.viewport
         self._tabs.setCurrentIndex(0)
+        self._tabs.addTab(self._tab_preview, "3D Preview")
         self._tabs.addTab(self._tab_handling, "Handling")
         self._tabs.addTab(self._tab_carcols,  "Car Colours")
         self._tabs.addTab(self._tab_carmods,  "Car Mods (SA)")
         lay.addWidget(self._tabs)
         return panel
 
-    def setup_ui(self): #vers 3
-        super().setup_ui()
+    def setup_ui(self): #vers 4
+        """Titlebar / [left | tabs | right] inside the ribbon host / status bar."""
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(*self.get_content_margins())
+        main_layout.setSpacing(self.setspacing)
+        # Viewport must exist before the toolbar (toolbar buttons reference it)
+        self.viewport = VehicleViewport()
+        self.viewport.app_settings = self.app_settings
+        main_layout.addWidget(self._create_toolbar())
+        for name in ("open_btn", "save_btn"):           # the File ribbon replaces these
+            b = getattr(self, name, None)
+            if b:
+                b.setVisible(False)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(self._create_left_panel())
+        splitter.addWidget(self._create_centre_panel())
+        splitter.addWidget(self._create_right_panel())
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 5)
+        splitter.setStretchFactor(2, 0)
+        splitter.setSizes([200, 800, 180])
+        main_layout.addWidget(self.ribbon_wrap(splitter), 1)
+        self._build_ribbons()
+        main_layout.addWidget(self._create_status_bar())
+        self.ribbon_restore_state()
+
+    def _build_ribbons(self): #vers 1
+        B = self.ribbon_button
+        tb = self.ribbon_toolbar("File")
+        B(tb, "open_icon",   "Open a DFF, TXD, handling.cfg, carcols.dat or carmods.dat  (Ctrl+O)", self._open_file)
+        self.save_btn = B(tb, "save_icon", "Save the file on the current tab  (Ctrl+S) - backs up first", self._save_file)
+        B(tb, "saveas_icon", "Save the current tab's file as...", self._save_as)
+        B(tb, "export_icon", "Save every changed data file", self._save_all, text="All")
 
     def _create_preview_tab(self): #vers 1
         """Build the 3D Preview tab with DFFViewport and vehicle controls."""
@@ -3799,8 +4362,8 @@ class VehicleWorkshop(GLViewportMixin, GUIWorkshop): #vers 3
         lay.addWidget(self._vw_status)
         return tab
 
-    # Methods from model_viewer
 
+    # Methods from model_viewer
 
     def _show_progress(self, visible: bool): #vers 1
         if hasattr(self, '_progress'):
@@ -3811,14 +4374,17 @@ class VehicleWorkshop(GLViewportMixin, GUIWorkshop): #vers 3
 
     def _light_setup_dialog(self): #vers 2
         """Light direction, intensity and vehicle paint colour dialog."""
-        dlg = QDialog(self); dlg.setWindowTitle("Light & Paint Setup"); dlg.resize(360, 380)
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Light & Paint Setup")
+        dlg.resize(360, 380)
         lay = QVBoxLayout(dlg)
         form = QFormLayout()
 
         vp = self.viewport
+        from PyQt6.QtWidgets import QSlider
 
         # Light direction sliders
-        def _slider(lo, hi, val, scale=10):
+        def _slider(lo, hi, val, scale=10):  #vers 1
             s = QSlider(Qt.Orientation.Horizontal)
             s.setRange(int(lo*scale), int(hi*scale))
             s.setValue(int(val*scale))
@@ -3836,7 +4402,7 @@ class VehicleWorkshop(GLViewportMixin, GUIWorkshop): #vers 3
         la_lbl = QLabel(f"{vp._ambient:.2f}")
         ld_lbl = QLabel(f"{vp._diffuse:.2f}")
 
-        def _upd():
+        def _upd():  #vers 1
             x = sx.value()/10; y = sy.value()/10; z = sz.value()/10
             a = sa.value()/100; d = sd.value()/100
             lx_lbl.setText(f"{x:.1f}"); ly_lbl.setText(f"{y:.1f}"); lz_lbl.setText(f"{z:.1f}")
@@ -3845,7 +4411,7 @@ class VehicleWorkshop(GLViewportMixin, GUIWorkshop): #vers 3
 
         for s in (sx,sy,sz,sa,sd): s.valueChanged.connect(_upd)
 
-        def _row(lbl, slider, val_lbl):
+        def _row(lbl, slider, val_lbl):  #vers 1
             rw = QWidget(); rl = QHBoxLayout(rw); rl.setContentsMargins(0,0,0,0)
             rl.addWidget(slider,1); rl.addWidget(val_lbl)
             form.addRow(lbl, rw)
@@ -3863,14 +4429,14 @@ class VehicleWorkshop(GLViewportMixin, GUIWorkshop): #vers 3
         paint_grp = QGroupBox("Vehicle Paint Preview")
         paint_lay = QHBoxLayout(paint_grp)
 
-        def _colour_btn(label, current_rgb, setter):
-            def _to_qcolor(rgb):
+        def _colour_btn(label, current_rgb, setter):  #vers 1
+            def _to_qcolor(rgb):  #vers 1
                 from PyQt6.QtGui import QColor
                 return QColor(int(rgb[0]*255), int(rgb[1]*255), int(rgb[2]*255))
             btn = QPushButton(label)
             btn.setStyleSheet(f"background-color: rgb({int(current_rgb[0]*255)},{int(current_rgb[1]*255)},{int(current_rgb[2]*255)})")
             btn.setFixedHeight(28)
-            def _pick():
+            def _pick():  #vers 1
                 col = QColorDialog.getColor(_to_qcolor(setter.__self__._paint1 if 'paint1' in label.lower() or 'primary' in label.lower() else setter.__self__._paint2), dlg)
                 if col.isValid():
                     rgb = (col.redF(), col.greenF(), col.blueF())
@@ -3884,7 +4450,7 @@ class VehicleWorkshop(GLViewportMixin, GUIWorkshop): #vers 3
         p1_btn = QPushButton("Primary Paint")
         p1_btn.setStyleSheet(f"background-color: rgb({int(vp._paint1[0]*255)},{int(vp._paint1[1]*255)},{int(vp._paint1[2]*255)})")
         p1_btn.setFixedHeight(28)
-        def _pick1():
+        def _pick1():  #vers 1
             from PyQt6.QtGui import QColor
             col = QColorDialog.getColor(QColor(int(vp._paint1[0]*255),int(vp._paint1[1]*255),int(vp._paint1[2]*255)), dlg)
             if col.isValid():
@@ -3896,7 +4462,7 @@ class VehicleWorkshop(GLViewportMixin, GUIWorkshop): #vers 3
         p2_btn = QPushButton("Secondary Paint")
         p2_btn.setStyleSheet(f"background-color: rgb({int(vp._paint2[0]*255)},{int(vp._paint2[1]*255)},{int(vp._paint2[2]*255)})")
         p2_btn.setFixedHeight(28)
-        def _pick2():
+        def _pick2():  #vers 1
             from PyQt6.QtGui import QColor
             col = QColorDialog.getColor(QColor(int(vp._paint2[0]*255),int(vp._paint2[1]*255),int(vp._paint2[2]*255)), dlg)
             if col.isValid():
@@ -3909,7 +4475,7 @@ class VehicleWorkshop(GLViewportMixin, GUIWorkshop): #vers 3
         lay.addWidget(paint_grp)
 
         reset_btn = QPushButton("Reset Defaults")
-        def _reset():
+        def _reset():  #vers 1
             sx.setValue(10); sy.setValue(20); sz.setValue(15)
             sa.setValue(30); sd.setValue(85)
             vp._paint1 = (0.80, 0.20, 0.20)
@@ -3920,8 +4486,11 @@ class VehicleWorkshop(GLViewportMixin, GUIWorkshop): #vers 3
         reset_btn.clicked.connect(_reset)
 
         btn_row = QHBoxLayout()
-        close_btn = QPushButton("Close"); close_btn.clicked.connect(dlg.accept)
-        btn_row.addWidget(reset_btn); btn_row.addStretch(); btn_row.addWidget(close_btn)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(reset_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
         lay.addLayout(btn_row)
         dlg.exec()
 
@@ -3958,15 +4527,33 @@ class VehicleWorkshop(GLViewportMixin, GUIWorkshop): #vers 3
         except Exception as e:
             self._vw_status.setText(f'Error: {e}')
 
-    def _vw_load_txd(self, path: str): #vers 1
+    def _vw_load_txd(self, path: str): #vers 2
         try:
             from apps.methods.txd_parser import parse_txd
             with open(path,'rb') as f: data=f.read()
             textures=parse_txd(data)
             vp=getattr(self,'_vw_viewport',None)
             if vp and hasattr(vp,'_upload_textures') and textures:
-                vp._upload_textures(textures)
+                vp._upload_textures(textures, additive=True)
                 vp.update()
+            # Populate texture list
+            if textures and hasattr(self,'_tex_list'):
+                from PyQt6.QtGui import QIcon, QImage, QPixmap
+                from PyQt6.QtWidgets import QListWidgetItem
+                from PyQt6.QtCore import Qt
+                self._tex_list.clear()
+                for t in textures:
+                    item = QListWidgetItem(f"{t['name']}  {t.get('width',0)}\xd7{t.get('height',0)}")
+                    rgba=t.get('rgba_data',b''); w=t.get('width',0); h=t.get('height',0)
+                    if rgba and w>0 and h>0:
+                        try:
+                            img=QImage(rgba,w,h,w*4,QImage.Format.Format_RGBA8888)
+                            px=QPixmap.fromImage(img).scaled(32,32,
+                                Qt.AspectRatioMode.KeepAspectRatio,
+                                Qt.TransformationMode.SmoothTransformation)
+                            item.setIcon(QIcon(px))
+                        except Exception: pass
+                    self._tex_list.addItem(item)
         except Exception as e:
             self._vw_status.setText(f'TXD error: {e}')
 
@@ -3977,7 +4564,8 @@ class VehicleWorkshop(GLViewportMixin, GUIWorkshop): #vers 3
         vp.set_assembly_mode(enabled)
         if enabled:
             vp.load_all_geometries(m.geometries,[g.materials for g in m.geometries],
-                                   m.frames,m.atomics)
+                                   m.frames,m.atomics,
+                                   damaged=getattr(self,'_damage_mode',False))
         elif m.geometries:
             vp.load_geometry(m.geometries[0],m.geometries[0].materials)
 
@@ -4005,20 +4593,63 @@ class VehicleWorkshop(GLViewportMixin, GUIWorkshop): #vers 3
             self._vw_paint2.setStyleSheet(f'background:{col.name()}')
             vp.update()
 
-    def _open_file(self, path=None): #vers 2
-        """Open button — shows dialog for DFF or data files based on active tab."""
+    def _open_file(self, path=None): #vers 4
+        """Open button — shows dialog when no path given.
+        When path is provided, loads directly without any dialog."""
+        # Qt triggered signal passes checked=False/True — treat as no path
+        if not isinstance(path, (str, bytes, os.PathLike)):
+            path = None
+        if path is not None:
+            name = os.path.basename(path).lower()
+            if name.endswith('.dff'):
+                self._vw_load_dff(path)
+                self._tabs.setCurrentIndex(0)
+            elif name.endswith('.txd'):
+                self._vw_load_txd(path)
+                self._tabs.setCurrentIndex(0)
+            elif 'handling' in name:
+                if self._tab_handling.load_file(path):
+                    self._handling_path = path
+                    self._set_status(f"Handling: {os.path.basename(path)}")
+                    try:
+                        mw = getattr(self, 'main_window', None)
+                        if mw and hasattr(self._tab_handling, '_parser') and self._tab_handling._parser:
+                            names = {e.name.lower() for e in self._tab_handling._parser.entries if e.name}
+                            mw.vehicle_names = getattr(mw, 'vehicle_names', set()) | names
+                    except Exception:
+                        pass
+            elif 'carcols' in name:
+                if self._tab_carcols.load_file(path):
+                    self._carcols_path = path
+                    self._set_status(f"Car Colours: {os.path.basename(path)}")
+            elif 'carmods' in name:
+                if self._tab_carmods.load_file(path):
+                    self._carmods_path = path
+                    self._set_status(f"Car Mods: {os.path.basename(path)}")
+            elif ('vehicles' in name or 'default' in name) and name.endswith('.ide'):
+                # SA/VC vehicles.ide or GTA3 default.ide — parse wheel scales
+                try:
+                    self._vehicles_ide_path = path
+                    self._parse_sa_vehicles_ide(path)
+                    self._set_status(f"Vehicles IDE: {os.path.basename(path)}")
+                except Exception as e:
+                    self._set_status(f"Vehicles IDE error: {e}")
+            elif 'cargrp' in name:
+                # cargrp.dat — informational for now
+                self._cargrp_path = path
+                self._set_status(f"Car Groups: {os.path.basename(path)}")
+            return
+        # No path — show dialog based on active tab
         active_tab = self._tabs.currentIndex() if hasattr(self, '_tabs') else -1
         if active_tab == 0:
-            # 3D Preview tab — open DFF
             self._vw_pick_dff()
             return
-        if path is None:
-            path, _ = QFileDialog.getOpenFileName(
-                self, "Open Vehicle Data File", "",
-                "All supported (*.dff *.cfg *.dat *.txd);;"
-                "DFF Model (*.dff);;TXD Textures (*.txd);;"
-                "Handling (handling.cfg *.cfg);;Car Colours (carcols.dat *.dat);;"
-                "Car Mods (carmods.dat *.dat);;All files (*)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open Vehicle Data File", "",
+            "All supported (*.dff *.cfg *.dat *.txd);;"
+            "DFF Model (*.dff);;TXD Textures (*.txd);;"
+            "Handling (handling.cfg *.cfg);;Car Colours (carcols.dat *.dat);;"
+            "Car Mods (carmods.dat *.dat);;All files (*)")
         if not path: return
         name = os.path.basename(path).lower()
         if name.endswith('.dff'):
@@ -4032,6 +4663,15 @@ class VehicleWorkshop(GLViewportMixin, GUIWorkshop): #vers 3
                 self._handling_path = path
                 self._tabs.setCurrentWidget(self._tab_handling)
                 self._set_status(f"Handling: {os.path.basename(path)}")
+                # Cache vehicle names on main_window for right-click menu
+                try:
+                    mw = getattr(self, 'main_window', None)
+                    if mw and hasattr(self._tab_handling, '_parser') and self._tab_handling._parser:
+                        names = {e.name.lower() for e in self._tab_handling._parser.entries if e.name}
+                        existing = getattr(mw, 'vehicle_names', set())
+                        mw.vehicle_names = existing | names
+                except Exception:
+                    pass
         elif "carcols" in name:
             if self._tab_carcols.load_file(path):
                 self._carcols_path = path
@@ -4046,28 +4686,82 @@ class VehicleWorkshop(GLViewportMixin, GUIWorkshop): #vers 3
             QMessageBox.warning(self, "Unknown",
                 "Expected a .dff, .txd, handling.cfg, carcols.dat or carmods.dat")
 
-    def _save_file(self): #vers 1
-        idx = self._tabs.currentIndex()
-        if idx == 0 and self._handling_path:
-            self._tab_handling.save_file(self._handling_path)
-            self._set_status(f"Saved {os.path.basename(self._handling_path)}")
-        elif idx == 1 and self._carcols_path:
-            self._tab_carcols.save_file(self._carcols_path)
-            self._set_status(f"Saved {os.path.basename(self._carcols_path)}")
-        elif idx == 2 and self._carmods_path:
-            self._tab_carmods.save_file(self._carmods_path)
-            self._set_status(f"Saved {os.path.basename(self._carmods_path)}")
-        else:
-            self._save_as()
+    # -- data files: (tab, path attribute, dialog filter)
+    def _data_tabs(self):
+        return [(self._tab_handling, "_handling_path", "Handling (handling.cfg *.cfg)"),
+                (self._tab_carcols,  "_carcols_path",  "Car Colours (carcols.dat *.dat)"),
+                (self._tab_carmods,  "_carmods_path",  "Car Mods (carmods.dat *.dat)")]
 
-    def _save_as(self): #vers 1
-        idx = self._tabs.currentIndex()
-        hints = ["Handling (handling.cfg *.cfg)", "Car Colours (carcols.dat *.dat)", "Car Mods (carmods.dat *.dat)"]
-        path, _ = QFileDialog.getSaveFileName(self, "Save As", "", hints[idx])
-        if not path: return
-        if idx == 0: self._handling_path = path; self._tab_handling.save_file(path)
-        elif idx == 1: self._carcols_path = path; self._tab_carcols.save_file(path)
-        elif idx == 2: self._carmods_path = path; self._tab_carmods.save_file(path)
+    def _current_data_tab(self):
+        cur = self._tabs.currentWidget()
+        return next((t for t in self._data_tabs() if t[0] is cur), None)
+
+    def has_unsaved(self) -> bool: #vers 1
+        return any(getattr(t, "dirty", False) for t, _a, _f in self._data_tabs())
+
+    def _write_data_tab(self, tab, path: str) -> bool: #vers 1
+        """Back the existing file up, then let the tab's file model write it atomically."""
+        from apps.methods.file_backup import backup_file, note_change
+        if os.path.exists(path):
+            note_change(f"Save {os.path.basename(path)}")
+            if backup_file(path) is None:
+                QMessageBox.warning(self, "Save", "Backup failed - file not overwritten.")
+                return False
+        if not tab.save_file(path):
+            QMessageBox.critical(self, "Save", f"Could not write {os.path.basename(path)}")
+            return False
+        return True
+
+    def _save_file(self): #vers 2
+        """Save the file on the current tab (the old version saved by tab NUMBER with
+        the numbers off by one, so it wrote the wrong data to the wrong file)."""
+        entry = self._current_data_tab()
+        if entry is None:
+            self._save_all()
+            return
+        tab, attr, _flt = entry
+        path = getattr(self, attr, None)
+        if not path:
+            self._save_as()
+            return
+        if self._write_data_tab(tab, path):
+            self._set_status(f"Saved {os.path.basename(path)}")
+
+    def _save_all(self): #vers 1
+        saved = []
+        for tab, attr, _f in self._data_tabs():
+            path = getattr(self, attr, None)
+            if path and getattr(tab, "dirty", False) and self._write_data_tab(tab, path):
+                saved.append(os.path.basename(path))
+        self._set_status("Saved " + ", ".join(saved) if saved else "Nothing to save")
+
+    def _save_as(self): #vers 2
+        entry = self._current_data_tab()
+        if entry is None:
+            QMessageBox.information(self, "Save As", "Switch to the Handling, Car Colours or Car Mods tab first.")
+            return
+        tab, attr, flt = entry
+        path, _ = QFileDialog.getSaveFileName(self, "Save As", getattr(self, attr, None) or "", flt)
+        if path and self._write_data_tab(tab, path):
+            setattr(self, attr, path)
+            self._set_status(f"Saved {os.path.basename(path)}")
+
+    def closeEvent(self, event): #vers 2
+        if self.standalone_mode and self.has_unsaved():
+            r = QMessageBox.question(
+                self, "Vehicle Workshop", "Save changed data files before closing?",
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard
+                | QMessageBox.StandardButton.Cancel)
+            if r == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+            if r == QMessageBox.StandardButton.Save:
+                self._save_all()
+                if self.has_unsaved():
+                    event.ignore()
+                    return
+        self.ribbon_save_state()
+        super().closeEvent(event)
 
     def _open_specific(self, kind: str): #vers 1
         f = {"handling":"Handling (handling.cfg *.cfg)",
@@ -4108,7 +4802,7 @@ def open_vehicle_workshop(main_window=None, path: str = None): #vers 1
     return w
 
 
-if __name__ == "__main__":
+if __name__ == "__main__": #vers 1
     # Must set compat profile BEFORE QApplication
     try:
         from PyQt6.QtGui import QSurfaceFormat
