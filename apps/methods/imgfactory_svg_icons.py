@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-#this belongs in apps/methods/imgfactory_svg_icons.py - Version: 81
+#this belongs in apps/methods/imgfactory_svg_icons.py - Version: 82
 # X-Seti - December17 2025 - Img Factory - Standardized SVG Icons
 
 """
@@ -122,6 +122,7 @@ from PyQt6.QtCore import Qt
 # pause_icon
 # ped_app_icon
 # onion_skin_icon
+# ped_view_icon
 # play_icon
 # prim_select_icon
 # properties_icon
@@ -439,6 +440,18 @@ class SVGIconFactory: #vers 8
                 <g opacity="0.35"><circle cx="19" cy="5" r="1.6"/><path d="M19 7v6M19 13l-2 6M19 13l2 6"/></g>
                 <circle cx="12" cy="4.5" r="2"/><path d="M12 7v7M9 10h6M12 14l-3 6M12 14l3 6"/>
             </g>
+        </svg>'''
+        return SVGIconFactory._create_icon(svg_data, size, color)
+
+    @staticmethod
+    def ped_view_icon(size: int = 20, color: str = None) -> QIcon: #vers 1
+        """Ped view - figure inside a turning arrow (front / right / back / left)"""
+        svg_data = '''<svg viewBox="0 0 24 24">
+            <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+                <circle cx="12" cy="6.5" r="1.8"/><path d="M12 8.5v5M9.5 10.5h5M12 13.5l-2 4M12 13.5l2 4"/>
+                <path d="M3.5 12a8.5 8.5 0 0 0 15 5.5"/><path d="M20.5 12a8.5 8.5 0 0 0-15-5.5"/>
+            </g>
+            <path d="M19.5 14.5l-1 3.6-3.5-1z M4.5 9.5l1-3.6 3.5 1z" fill="currentColor"/>
         </svg>'''
         return SVGIconFactory._create_icon(svg_data, size, color)
 
