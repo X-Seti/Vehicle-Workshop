@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-#this belongs in root /buildscript.py - Version: 2
+#this belongs in root /buildscript.py - Version: 6
 # X-Seti - October 26 2026 - Vehicle Workshop - build for this computer's platform
 
 """
@@ -11,6 +11,9 @@ Intel. GitHub Actions (.github/workflows/build.yml) runs it on each.
     python buildscript.py --ci       also compile PyInstaller's bootloader
     python buildscript.py --no-install
     python buildscript.py --name     print the app name
+
+Runs inside its own .venv (made on first run), so the system Python
+(PEP 668 / Arch, Debian, Fedora) is never changed.
 
 Output: dist/<APP>/ (folder build: the program plus its _internal/ files)
 and dist/<APP>_<Platform>_<arch>.zip (.tar.gz on Linux).
@@ -26,6 +29,7 @@ and dist/<APP>_<Platform>_<arch>.zip (.tar.gz on Linux).
 # _pyinstaller
 # _run
 # _smoke_test
+# _use_venv
 # main
 
 import os
@@ -34,6 +38,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections import deque
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -52,12 +57,21 @@ CONFIG = {
 # --------------------------------------------------------------------------------------------------
 
 SKIP_DIRS = {'__pycache__', '_to_delete', '.git'}
+TAIL = deque(maxlen=40)                                  # last output lines, for error reports
 
 
-def _run(cmd, env=None, check=True): #vers 1
-    """Run a command, echoed."""
+def _run(cmd, env=None, check=True): #vers 2
+    """Run a command, echoed; output streamed, last lines kept in TAIL."""
     print('>', ' '.join(cmd), flush=True)
-    return subprocess.run(cmd, cwd=ROOT, env=env, check=check)
+    p = subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         text=True, errors='replace')
+    for line in p.stdout:
+        sys.stdout.write(line)
+        TAIL.append(line.rstrip())
+    p.wait()
+    if check and p.returncode:
+        raise subprocess.CalledProcessError(p.returncode, cmd)
+    return p
 
 
 def _install(ci: bool): #vers 1
@@ -108,7 +122,7 @@ def _apps_data() -> list: #vers 2
     return out
 
 
-def _icon() -> str: #vers 1
+def _icon() -> str: #vers 2
     """App SVG icon rendered to build/<app>.png (PyInstaller converts it per platform), or ''."""
     if not CONFIG['icon']:
         return ''
@@ -120,7 +134,9 @@ def _icon() -> str: #vers 1
     fn = getattr(icons.SVGIconFactory, CONFIG['icon'], None) or getattr(icons, CONFIG['icon'])
     out = os.path.join(ROOT, 'build', CONFIG['name'] + '.png')
     os.makedirs(os.path.dirname(out), exist_ok=True)
-    if not fn(256).pixmap(256, 256).toImage().save(out, 'PNG'):
+    import inspect
+    icon = fn(256) if inspect.signature(fn).parameters else fn()   # some take no size
+    if not icon.pixmap(256, 256).toImage().save(out, 'PNG'):
         raise RuntimeError('Icon render failed')
     return out
 
@@ -147,21 +163,30 @@ def _pyinstaller(icon: str): #vers 1
             shutil.copytree(src, os.path.join(out, name), dirs_exist_ok=True)
 
 
-def _smoke_test(): #vers 1
-    """Start the built program off-screen; it must still be running after 15 s."""
+def _smoke_test(): #vers 3
+    """Start the built program; it must still be running after 15 s (Linux without a display: xvfb-run)."""
     name = CONFIG['name']
     if sys.platform == 'darwin':
         exe = os.path.join(ROOT, 'dist', name + '.app', 'Contents', 'MacOS', name)
     else:
         exe = os.path.join(ROOT, 'dist', name, name + ('.exe' if sys.platform == 'win32' else ''))
-    env = dict(os.environ, QT_QPA_PLATFORM='offscreen')
-    p = subprocess.Popen([exe], cwd=os.path.dirname(exe), env=env,
+    cmd, env = [exe], dict(os.environ, QT_QPA_PLATFORM='offscreen')
+    if sys.platform.startswith('linux'):
+        env.pop('QT_QPA_PLATFORM')                       # apps choose xcb themselves
+        if not (os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')):
+            if not shutil.which('xvfb-run'):
+                raise RuntimeError('No display for the start test: install xvfb (xvfb-run)')
+            cmd = ['xvfb-run', '-a'] + cmd
+    p = subprocess.Popen(cmd, cwd=os.path.dirname(exe), env=env,
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     for _ in range(30):
         time.sleep(0.5)
         if p.poll() is not None:
-            print(p.stdout.read().decode(errors='replace'))
-            raise RuntimeError(f'{name} exited early (code {p.returncode})')
+            out = p.stdout.read().decode(errors='replace')
+            print(out)
+            at = out.rfind('Traceback')
+            why = out[at:] if at >= 0 else out[-1500:]           # the program's own error first
+            raise RuntimeError(f'{name} exited early (code {p.returncode})\n{why[-1500:]}')
     p.kill()
     print(f'{name} started and kept running: OK')
 
@@ -176,15 +201,37 @@ def _package() -> str: #vers 1
     return shutil.make_archive(base, fmt, os.path.join(ROOT, 'dist'), name)
 
 
-def main(): #vers 1
+def _use_venv(): #vers 1
+    """Not in a virtual env: make ROOT/.venv (first run) and run this script again with its Python."""
+    if sys.prefix != sys.base_prefix:
+        return
+    venv = os.path.join(ROOT, '.venv')
+    py = os.path.join(venv, 'Scripts', 'python.exe') if sys.platform == 'win32' else os.path.join(venv, 'bin', 'python')
+    if not os.path.exists(py):
+        print('Creating', venv, flush=True)
+        _run([sys.executable, '-m', 'venv', venv])
+    sys.exit(subprocess.run([py, os.path.abspath(__file__)] + sys.argv[1:], cwd=ROOT).returncode)
+
+
+def main(): #vers 4
     if '--name' in sys.argv:
         print(CONFIG['name'])
         return
-    if '--no-install' not in sys.argv:
-        _install('--ci' in sys.argv)
-    _pyinstaller(_icon())
-    _smoke_test()
-    print('Built', _package())
+    _use_venv()
+    try:
+        if '--no-install' not in sys.argv:
+            _install('--ci' in sys.argv)
+        _pyinstaller(_icon())
+        _smoke_test()
+        print('Built', _package())
+    except Exception as e:
+        if os.environ.get('GITHUB_ACTIONS'):             # visible on the run page without signing in
+            lines = f'{type(e).__name__}: {e}'.splitlines()
+            if not isinstance(e, RuntimeError):
+                lines += list(TAIL)[-25:]
+            msg = '%0A'.join(ln.replace('%', '%25').replace('\r', '') for ln in lines)
+            print(f'::error title={CONFIG["name"]} {_platform_tag()} build failed::{msg}', flush=True)
+        raise
 
 
 if __name__ == '__main__':

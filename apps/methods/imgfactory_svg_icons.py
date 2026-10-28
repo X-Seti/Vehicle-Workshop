@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-#this belongs in apps/methods/imgfactory_svg_icons.py - Version: 82
+#this belongs in apps/methods/imgfactory_svg_icons.py - Version: 88
 # X-Seti - December17 2025 - Img Factory - Standardized SVG Icons
 
 """
@@ -83,7 +83,9 @@ from PyQt6.QtCore import Qt
 # frame_prev_icon
 # generate_alpha_icon
 # generate_mipmaps_icon
+# gizmo_axes_icon
 # globe_icon
+# guide_layer_icon
 # handling_app_icon
 # hex_app_icon
 # hide_faces_icon
@@ -160,6 +162,8 @@ from PyQt6.QtCore import Qt
 # swap_arrows_icon
 # swatch_icon
 # switch_view_icon
+# terrain_app_icon
+# terrain_image_icon
 # texture_export_icon
 # texture_import_icon
 # texture_properties_icon
@@ -3503,6 +3507,15 @@ class SVGIconFactory: #vers 8
         </svg>''', size, color)
 
     @staticmethod
+    def sound_icon(size: int = 20, color: str = None) -> QIcon: #vers 1
+        """Audio / sound indicator - speaker with waves"""
+        return SVGIconFactory._create_icon('''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path d="M11 5 L6 9 H2 V15 H6 L11 19 Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+            <path d="M15.5 8.5 C16.5 10 16.5 14 15.5 15.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+            <path d="M18.5 5.5 C20.5 8 20.5 16 18.5 18.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>''', size, color)
+
+    @staticmethod
     def delay_timer_icon(size: int = 20, color: str = None) -> QIcon: #vers 1
         """Capture delay - stopwatch"""
         return SVGIconFactory._create_icon('''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -3712,6 +3725,86 @@ class SVGIconFactory: #vers 8
             </g>
             <text x="32" y="58" font-size="13" fill="#ffffff" text-anchor="middle"
                 font-weight="bold" font-family="Arial, sans-serif">PED</text>
+        </svg>''', size, color)
+
+    @staticmethod
+    def terrain_image_icon(size: int = 20, color: str = None) -> QIcon: #vers 1
+        """Terrain from image / radar - picture over a ground grid"""
+        return SVGIconFactory._create_icon('''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <rect x="3" y="3" width="13" height="10" rx="1" stroke="currentColor" stroke-width="1.6" fill="none"/>
+            <path d="M4.5 11.5 L8 7.5 L10.5 10 L12.5 8 L15 11.5" stroke="currentColor" stroke-width="1.4" fill="none"/>
+            <circle cx="12.5" cy="5.8" r="1.1" fill="currentColor"/>
+            <path d="M3 20 L8 15.5 L21 15.5 L16 20 Z" stroke="currentColor" stroke-width="1.4" fill="currentColor" fill-opacity="0.2"/>
+            <path d="M11.5 15.5 L7.5 20 M16 15.5 L12 20" stroke="currentColor" stroke-width="1"/>
+            <path d="M18 6 L21 9 L18 12" stroke="currentColor" stroke-width="1.6" fill="none"/>
+        </svg>''', size, color)
+
+    @staticmethod
+    def gizmo_axes_icon(size: int = 20, color: str = None) -> QIcon: #vers 1
+        """Show / hide the axis gizmo - three arrows from one corner"""
+        return SVGIconFactory._create_icon('''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path d="M6 18 L20 18 M6 18 L6 4 M6 18 L15 9" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+            <path d="M17 15.5 L20 18 L17 20.5 M3.5 7 L6 4 L8.5 7 M12 8.5 L15 9 L14.5 12" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linejoin="round"/>
+            <circle cx="6" cy="18" r="1.8" fill="currentColor"/>
+        </svg>''', size, color)
+
+    @staticmethod
+    def guide_layer_icon(size: int = 20, color: str = None) -> QIcon: #vers 1
+        """Show / hide the guide picture layer - eye over a sheet"""
+        return SVGIconFactory._create_icon('''<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path d="M3 17 L9 13 L21 13 L15 17 Z" stroke="currentColor" stroke-width="1.4" fill="currentColor" fill-opacity="0.25"/>
+            <path d="M3 21 L9 17 L21 17 L15 21 Z" stroke="currentColor" stroke-width="1.2" fill="none" opacity="0.6"/>
+            <path d="M4 7 Q12 0 20 7 Q12 14 4 7 Z" stroke="currentColor" stroke-width="1.6" fill="none"/>
+            <circle cx="12" cy="7" r="2.3" fill="currentColor"/>
+        </svg>''', size, color)
+
+    @staticmethod
+    def disc_app_icon(size: int = 64, color: str = None) -> QIcon: #vers 1
+        """Disc Workshop application icon - CD with a file sheet"""
+        return SVGIconFactory._create_icon('''<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+            <rect x="0" y="0" width="64" height="64" rx="12" ry="12" fill="#2a2a34"/>
+            <circle cx="28" cy="30" r="20" fill="#b8c0d0" stroke="#ffffff" stroke-width="1.5"/>
+            <circle cx="28" cy="30" r="13" fill="none" stroke="#8ea0c0" stroke-width="3"/>
+            <circle cx="28" cy="30" r="5" fill="#2a2a34" stroke="#ffffff" stroke-width="1"/>
+            <rect x="40" y="30" width="18" height="22" rx="2" fill="#f0f0f0" stroke="#2a2a34" stroke-width="1"/>
+            <path d="M43 36 H55 M43 41 H55 M43 46 H51" stroke="#5a7a9a" stroke-width="1.5"/>
+            <text x="22" y="60" font-size="10" fill="#ffffff" text-anchor="middle"
+                font-weight="bold" font-family="Arial, sans-serif">DISC</text>
+        </svg>''', size, color)
+
+    @staticmethod
+    def retro_gta_app_icon(size: int = 64, color: str = None) -> QIcon: #vers 1
+        """Retro GTA Workshop application icon - top-down city blocks and car"""
+        return SVGIconFactory._create_icon('''<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+            <rect x="0" y="0" width="64" height="64" rx="12" ry="12" fill="#2a2a34"/>
+            <rect x="6" y="6" width="20" height="18" fill="#8a6a4a" stroke="#ffffff" stroke-width="1"/>
+            <rect x="38" y="6" width="20" height="18" fill="#5a7a9a" stroke="#ffffff" stroke-width="1"/>
+            <rect x="6" y="30" width="52" height="12" fill="#404048"/>
+            <path d="M8 36 L56 36" stroke="#ffd84a" stroke-width="1.2" stroke-dasharray="4 3"/>
+            <rect x="30" y="6" width="4" height="24" fill="#404048"/>
+            <rect x="40" y="32" width="10" height="7" rx="2" fill="#e04040"/>
+            <text x="32" y="58" font-size="12" fill="#ffffff" text-anchor="middle"
+                font-weight="bold" font-family="Arial, sans-serif">GTA2</text>
+        </svg>''', size, color)
+
+    @staticmethod
+    def terrain_app_icon(size: int = 64, color: str = None) -> QIcon: #vers 1
+        """Terrain Workshop application icon - hills, road and grid"""
+        return SVGIconFactory._create_icon('''<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+                <linearGradient id="terrappG" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" style="stop-color:#3a6a2a;stop-opacity:1"/>
+                    <stop offset="100%" style="stop-color:#1e3a16;stop-opacity:1"/>
+                </linearGradient>
+            </defs>
+            <rect x="0" y="0" width="64" height="64" rx="12" ry="12" fill="url(#terrappG)"/>
+            <path d="M4 40 L18 20 L28 32 L40 14 L60 40 Z" fill="#8a7a5a" stroke="#ffffff" stroke-width="1.5" stroke-linejoin="round"/>
+            <path d="M4 40 L60 40 L60 46 L4 46 Z" fill="#5aa040"/>
+            <path d="M22 46 L30 40 L36 40 L32 46 Z" fill="#505050"/>
+            <path d="M28 44 L31 41" stroke="#ffd84a" stroke-width="1.2"/>
+            <path d="M40 14 L46 22 L34 22 Z" fill="#e8e0d0"/>
+            <text x="32" y="58" font-size="12" fill="#ffffff" text-anchor="middle"
+                font-weight="bold" font-family="Arial, sans-serif">TERR</text>
         </svg>''', size, color)
 
     @staticmethod
@@ -7086,6 +7179,7 @@ def redo_icon(size: int = 20, color: str = None) -> QIcon: #vers 1
 SVGIconFactory.redo_icon            = staticmethod(redo_icon)
 SVGIconFactory.get_cull_zone_icon   = staticmethod(get_cull_zone_icon)
 SVGIconFactory.get_zone_icon        = staticmethod(get_zone_icon)
+SVGIconFactory.get_pin_icon         = staticmethod(get_pin_icon)
 SVGIconFactory.get_occlusion_icon   = staticmethod(get_occlusion_icon)
 SVGIconFactory.get_paths_icon       = staticmethod(get_paths_icon)
 SVGIconFactory.get_tracks_icon      = staticmethod(get_tracks_icon)

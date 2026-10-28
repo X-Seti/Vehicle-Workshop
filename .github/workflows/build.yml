@@ -1,4 +1,4 @@
-# this belongs in root /.github/workflows/build.yml - Version: 2
+# this belongs in root /.github/workflows/build.yml - Version: 3
 # X-Seti - October 26 2026 - Build on Windows / Linux / macOS (x64 + arm64) with buildscript.py
 name: Build
 
@@ -52,9 +52,11 @@ jobs:
 
       - name: Qt libraries (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libxcb-cursor0 libfontconfig1
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 libfontconfig1 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-render-util0 libxcb-image0 libxcb-xinerama0 xvfb xauth
 
       - name: Build, test, package
+        env:
+          PYTHONUTF8: '1'
         run: python buildscript.py --ci
 
       - uses: actions/upload-artifact@v4
