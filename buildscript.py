@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-#this belongs in root /buildscript.py - Version: 6
+#this belongs in root /buildscript.py - Version: 7
 # X-Seti - October 26 2026 - Vehicle Workshop - build for this computer's platform
 
 """
@@ -8,7 +8,8 @@ for another one): Windows x64 / arm64, Linux x64 / arm64, macOS arm64 /
 Intel. GitHub Actions (.github/workflows/build.yml) runs it on each.
 
     python buildscript.py            install deps, build, test, package
-    python buildscript.py --ci       also compile PyInstaller's bootloader
+    python buildscript.py --ci       also compile PyInstaller's bootloader, make the installer
+    python buildscript.py --installer  make the installer (local run)
     python buildscript.py --no-install
     python buildscript.py --name     print the app name
 
@@ -16,7 +17,9 @@ Runs inside its own .venv (made on first run), so the system Python
 (PEP 668 / Arch, Debian, Fedora) is never changed.
 
 Output: dist/<APP>/ (folder build: the program plus its _internal/ files)
-and dist/<APP>_<Platform>_<arch>.zip (.tar.gz on Linux).
+and dist/<APP>_<Platform>_<arch>.zip (.tar.gz on Linux, with install.sh).
+Installers: Windows dist/<APP>_<Platform>_<arch>_Setup.exe (Inno Setup 6),
+macOS dist/<APP>_<Platform>_<arch>.dmg. Linux: install.sh in the .tar.gz.
 """
 
 ##Methods list -
@@ -24,12 +27,16 @@ and dist/<APP>_<Platform>_<arch>.zip (.tar.gz on Linux).
 # _apps_data
 # _icon
 # _install
+# _installer
+# _linux_scripts
+# _mac_dmg
 # _package
 # _platform_tag
 # _pyinstaller
 # _run
 # _smoke_test
 # _use_venv
+# _windows_setup
 # main
 
 import os
@@ -38,6 +45,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 from collections import deque
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -49,7 +57,7 @@ CONFIG = {
     'launcher': 'launch_vehicle_workshop.py',
     'icon': 'vehicle_app_icon',
     'required': ['PyQt6', 'numpy'],
-    'optional': ['PyOpenGL', 'pycryptodome', 'python-lzo', 'scipy'],
+    'optional': ['PyOpenGL', 'mss', 'pycryptodome', 'python-lzo', 'scipy'],
     'hidden': ['PyQt6.QtSvg', 'PyQt6.QtOpenGL', 'PyQt6.QtOpenGLWidgets', 'OpenGL.arrays.numpymodule'],
     'bundle_files': [],
     'beside_exe': [],
@@ -201,6 +209,113 @@ def _package() -> str: #vers 1
     return shutil.make_archive(base, fmt, os.path.join(ROOT, 'dist'), name)
 
 
+def _linux_scripts(icon: str): #vers 1
+    """install.sh / uninstall.sh and the icon into dist/<APP>/ (per user, no root)."""
+    name, title = CONFIG['name'], CONFIG['title']
+    out = os.path.join(ROOT, 'dist', name)
+    if icon:
+        shutil.copy(icon, os.path.join(out, name + '.png'))
+    install = f"""#!/bin/sh
+# Installs {title} for this user: ~/.local/opt/{name}, menu entry, ~/.local/bin/{name}
+set -e
+HERE="$(cd "$(dirname "$0")" && pwd)"
+DEST="$HOME/.local/opt/{name}"
+ICONS="$HOME/.local/share/icons/hicolor/256x256/apps"
+APPS="$HOME/.local/share/applications"
+mkdir -p "$DEST" "$HOME/.local/bin" "$ICONS" "$APPS"
+[ "$HERE" = "$DEST" ] || cp -a "$HERE/." "$DEST/"
+ln -sf "$DEST/{name}" "$HOME/.local/bin/{name}"
+[ -f "$DEST/{name}.png" ] && cp "$DEST/{name}.png" "$ICONS/{name}.png"
+cat > "$APPS/{name}.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name={title}
+Exec="$DEST/{name}" %f
+Icon={name}
+Terminal=false
+Categories=Graphics;Development;
+EOF
+command -v update-desktop-database >/dev/null && update-desktop-database "$APPS"
+echo "{title} installed in $DEST - start it from the menu or run: {name}"
+"""
+    uninstall = f"""#!/bin/sh
+# Removes {title} installed by install.sh
+rm -f "$HOME/.local/bin/{name}" "$HOME/.local/share/applications/{name}.desktop" \\
+      "$HOME/.local/share/icons/hicolor/256x256/apps/{name}.png"
+rm -rf "$HOME/.local/opt/{name}"
+echo "{title} removed"
+"""
+    for fname, text in (('install.sh', install), ('uninstall.sh', uninstall)):
+        path = os.path.join(out, fname)
+        with open(path, 'w', newline='\n') as f:
+            f.write(text)
+        os.chmod(path, 0o755)
+
+
+def _windows_setup(icon: str) -> str: #vers 1
+    """Inno Setup 6 installer: per-user install, Start menu, optional desktop icon, uninstaller."""
+    from PIL import Image
+    name, title, tag = CONFIG['name'], CONFIG['title'], _platform_tag()
+    iscc = shutil.which('iscc') or os.path.join(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)'),
+                                                 'Inno Setup 6', 'ISCC.exe')
+    if not os.path.exists(iscc):
+        raise RuntimeError('Inno Setup 6 not found (ISCC.exe): choco install innosetup')
+    build = os.path.join(ROOT, 'build')
+    lines = ['[Setup]',
+             'AppId={{%s}' % uuid.uuid5(uuid.NAMESPACE_DNS, 'com.xseti.' + name.lower()),
+             f'AppName={title}', f'AppVersion={time.strftime("%Y.%m.%d")}', 'AppPublisher=X-Seti',
+             f'DefaultDirName={{autopf}}\\{title}', f'DefaultGroupName={title}',
+             'PrivilegesRequired=lowest', 'PrivilegesRequiredOverridesAllowed=dialog',
+             f'OutputDir={os.path.join(ROOT, "dist")}', f'OutputBaseFilename={name}_{tag}_Setup',
+             f'UninstallDisplayIcon={{app}}\\{name}.exe', 'Compression=lzma2', 'SolidCompression=yes',
+             'WizardStyle=modern',
+             'ArchitecturesAllowed=' + ('arm64' if tag.endswith('arm64') else 'x64compatible'),
+             'ArchitecturesInstallIn64BitMode=' + ('arm64' if tag.endswith('arm64') else 'x64compatible')]
+    if icon:
+        ico = os.path.join(build, name + '.ico')
+        Image.open(icon).save(ico, sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+        lines.append(f'SetupIconFile={ico}')
+    lines += ['', '[Tasks]',
+              'Name: desktopicon; Description: "{cm:CreateDesktopIcon}"; Flags: unchecked',
+              '', '[Files]',
+              f'Source: "{os.path.join(ROOT, "dist", name)}\\*"; DestDir: "{{app}}"; '
+              'Flags: ignoreversion recursesubdirs createallsubdirs',
+              '', '[Icons]',
+              f'Name: "{{group}}\\{title}"; Filename: "{{app}}\\{name}.exe"',
+              f'Name: "{{group}}\\Uninstall {title}"; Filename: "{{uninstallexe}}"',
+              f'Name: "{{autodesktop}}\\{title}"; Filename: "{{app}}\\{name}.exe"; Tasks: desktopicon',
+              '', '[Run]',
+              f'Filename: "{{app}}\\{name}.exe"; Description: "{{cm:LaunchProgram,{title}}}"; '
+              'Flags: nowait postinstall skipifsilent']
+    iss = os.path.join(build, name + '.iss')
+    with open(iss, 'w', encoding='utf-8-sig') as f:
+        f.write('\n'.join(lines) + '\n')
+    _run([iscc, '/Q', iss])
+    return os.path.join(ROOT, 'dist', f'{name}_{tag}_Setup.exe')
+
+
+def _mac_dmg() -> str: #vers 1
+    """Disk image with the .app and an Applications link (drag to install)."""
+    name, tag = CONFIG['name'], _platform_tag()
+    stage = os.path.join(ROOT, 'build', 'dmg')
+    shutil.rmtree(stage, ignore_errors=True)
+    os.makedirs(stage)
+    shutil.copytree(os.path.join(ROOT, 'dist', name + '.app'), os.path.join(stage, name + '.app'), symlinks=True)
+    os.symlink('/Applications', os.path.join(stage, 'Applications'))
+    out = os.path.join(ROOT, 'dist', f'{name}_{tag}.dmg')
+    _run(['hdiutil', 'create', '-volname', CONFIG['title'], '-srcfolder', stage, '-ov', '-format', 'UDZO', out])
+    return out
+
+
+def _installer(icon: str) -> str: #vers 1
+    """Windows Setup.exe or macOS .dmg (Linux: install.sh is in the .tar.gz)."""
+    if sys.platform == 'win32':
+        return _windows_setup(icon)
+    if sys.platform == 'darwin':
+        return _mac_dmg()
+    return ''
+
+
 def _use_venv(): #vers 1
     """Not in a virtual env: make ROOT/.venv (first run) and run this script again with its Python."""
     if sys.prefix != sys.base_prefix:
@@ -213,7 +328,7 @@ def _use_venv(): #vers 1
     sys.exit(subprocess.run([py, os.path.abspath(__file__)] + sys.argv[1:], cwd=ROOT).returncode)
 
 
-def main(): #vers 4
+def main(): #vers 5
     if '--name' in sys.argv:
         print(CONFIG['name'])
         return
@@ -221,9 +336,16 @@ def main(): #vers 4
     try:
         if '--no-install' not in sys.argv:
             _install('--ci' in sys.argv)
-        _pyinstaller(_icon())
+        icon = _icon()
+        _pyinstaller(icon)
         _smoke_test()
+        if sys.platform.startswith('linux'):
+            _linux_scripts(icon)
         print('Built', _package())
+        if '--ci' in sys.argv or '--installer' in sys.argv:
+            setup = _installer(icon)
+            if setup:
+                print('Installer', setup)
     except Exception as e:
         if os.environ.get('GITHUB_ACTIONS'):             # visible on the run page without signing in
             lines = f'{type(e).__name__}: {e}'.splitlines()

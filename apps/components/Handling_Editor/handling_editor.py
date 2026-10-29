@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-#this belongs in apps/components/Handling_Editor/handling_editor.py - Version: 8
+#this belongs in apps/components/Handling_Editor/handling_editor.py - Version: 9
 # X-Seti - May08 2026 - Img Factory 1.6 - Vehicle Handling Editor
 
 """
@@ -144,13 +144,14 @@ HANDLING_FLAGS = {
 # special lines (% $ ! &) are kept.
 from apps.methods.handling_file import HandlingEntry, HandlingParser, detect_game, header_fields
 from apps.methods.ribbon_system import RibbonMixin
+from apps.methods.ribbon_dialog import RibbonIconsMixin
 
 
 #                                                                              
 # Editor widget
 #                                                                              
 
-class HandlingEditor(RibbonMixin, GUIWorkshop): #vers 2
+class HandlingEditor(RibbonIconsMixin, RibbonMixin, GUIWorkshop): #vers 3
     App_name   = "Handling Editor"
     App_icon   = "handling_app_icon"
     App_build  = "Build 1"
@@ -161,7 +162,7 @@ class HandlingEditor(RibbonMixin, GUIWorkshop): #vers 2
     _RIBBON_LAYOUT_VERSION = 1
     DROP_EXTS = ('.cfg',)          # handling.cfg
 
-    def __init__(self, main_window=None, parent=None): #vers 2
+    def __init__(self, main_window=None, parent=None): #vers 3
         self._defer_setup_ui = True
         super().__init__(parent, main_window=main_window)   # docked: no corner handles
         self.main_window  = main_window
@@ -176,6 +177,8 @@ class HandlingEditor(RibbonMixin, GUIWorkshop): #vers 2
         self._ide_paths: List[str] = []
         self.setup_ui()
         self.ribbon_restore_state()
+        self._inner_mw = self._ribbon_mw      # Ribbon Manager target
+        self._apply_ribbon_layout()
         # Hide inner toolbar chrome when docked inside IMG Factory
         if main_window and hasattr(self, 'toolbar'):
             self.toolbar.hide()

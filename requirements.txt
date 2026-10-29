@@ -1,0 +1,8 @@
+Pillow
+PyOpenGL
+PyQt6
+mss
+numpy
+pycryptodome
+python-lzo
+scipy

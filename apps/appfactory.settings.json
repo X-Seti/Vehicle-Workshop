@@ -72,10 +72,13 @@
   "panel_pattern_dark": "#141428",
   "copper_light": "#b87333",
   "copper_dark": "#7a4a1a",
-  "panel_bg_image": "images/rockpi5-purple.png",
+  "panel_bg_image": "",
   "panel_bg_image_mode": 5,
   "panel_bg_image_opacity": 90,
   "panel_bg_image_all": true,
+  "see_through": false,
+  "viewport_solid": true,
+  "image_titlebar": 0,
   "button_style": "gradient_45",
   "progressbar_style": "system",
   "progressbar_fill": "#4a7a9b",
@@ -125,22 +128,5 @@
   "titlebar_opacity": 90,
   "button_opacity": 90,
   "widget_opacity": 90,
-  "color_alpha": {
-    "bg_primary": 90,
-    "bg_secondary": 90,
-    "bg_tertiary": 90,
-    "panel_bg": 90,
-    "button_normal": 90,
-    "selection_background": 90,
-    "menu_bg": 90,
-    "table_row_even": 90,
-    "table_row_odd": 90,
-    "panel_entries": 90,
-    "toolbar_bg": 90,
-    "gadgetbar_bg": 90,
-    "titlebar_bg": 90,
-    "splitter_color_background": 90,
-    "scrollbar_background": 90,
-    "dialog_bg": 90
-  }
+  "color_alpha": {}
 }
