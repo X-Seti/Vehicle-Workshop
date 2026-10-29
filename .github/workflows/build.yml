@@ -1,5 +1,5 @@
-# this belongs in root /.github/workflows/build.yml - Version: 4
-# X-Seti - October 28 2026 - Build + installers on Windows / Linux / macOS (x64 + arm64) with buildscript.py
+# this belongs in root /.github/workflows/build.yml - Version: 5
+# X-Seti - October 29 2026 - IMG Factory 1.6 core + Full builds, installers on Windows / Linux / macOS (x64 + arm64)
 name: Build
 
 on:
@@ -16,6 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, windows-11-arm, ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel]
+        variant: [core, full]                             # Img_Factory, Img_Factory_Full
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -66,11 +67,11 @@ jobs:
       - name: Build, test, package
         env:
           PYTHONUTF8: '1'
-        run: python buildscript.py --ci
+        run: python buildscript.py --ci --variant ${{ matrix.variant }}
 
       - uses: actions/upload-artifact@v4
         with:
-          name: build-${{ matrix.os }}
+          name: build-${{ matrix.os }}-${{ matrix.variant }}
           path: |
             dist/*.zip
             dist/*.tar.gz
@@ -94,4 +95,4 @@ jobs:
           gh release delete latest-build --repo "$GITHUB_REPOSITORY" --cleanup-tag -y || true
           gh release create latest-build out/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
             --title "${{ github.event.repository.name }} - latest build" \
-            --notes "Built from main. Windows: run the _Setup.exe (or unzip and run). macOS: open the .dmg, drag the app to Applications (first start: right-click > Open). Linux: tar -xzf, then ./install.sh in the folder (adds a menu entry), or run the program directly."
+            --notes "Built from main. Img_Factory = IMG Factory with core tools; Img_Factory_Full = every workshop. Windows: run the _Setup.exe (or unzip and run). macOS: open the .dmg, drag the app to Applications (first start: right-click > Open). Linux: tar -xzf, then ./install.sh in the folder (adds a menu entry), or run the program directly."
