@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-#this belongs in root /buildscript.py - Version: 7
+#this belongs in root /buildscript.py - Version: 9
 # X-Seti - October 26 2026 - Vehicle Workshop - build for this computer's platform
 
 """
@@ -11,20 +11,22 @@ Intel. GitHub Actions (.github/workflows/build.yml) runs it on each.
     python buildscript.py --ci       also compile PyInstaller's bootloader, make the installer
     python buildscript.py --installer  make the installer (local run)
     python buildscript.py --no-install
+    python buildscript.py --drop     also copy the program and _internal/ into the repo root
     python buildscript.py --name     print the app name
 
 Runs inside its own .venv (made on first run), so the system Python
 (PEP 668 / Arch, Debian, Fedora) is never changed.
 
-Output: dist/<APP>/ (folder build: the program plus its _internal/ files)
-and dist/<APP>_<Platform>_<arch>.zip (.tar.gz on Linux, with install.sh).
-Installers: Windows dist/<APP>_<Platform>_<arch>_Setup.exe (Inno Setup 6),
-macOS dist/<APP>_<Platform>_<arch>.dmg. Linux: install.sh in the .tar.gz.
+Output: <os>_<arch>_dist/<APP>/ (folder build: the program plus its _internal/ files)
+and <os>_<arch>_dist/<APP>_<Platform>_<arch>.zip (.tar.gz on Linux, with install.sh).
+Installers: Windows <os>_<arch>_dist/<APP>_<Platform>_<arch>_Setup.exe (Inno Setup 6),
+macOS <os>_<arch>_dist/<APP>_<Platform>_<arch>.dmg. Linux: install.sh in the .tar.gz.
 """
 
 ##Methods list -
 # _app_modules
 # _apps_data
+# _drop
 # _icon
 # _install
 # _installer
@@ -36,6 +38,7 @@ macOS dist/<APP>_<Platform>_<arch>.dmg. Linux: install.sh in the .tar.gz.
 # _run
 # _smoke_test
 # _use_venv
+# _version_file
 # _windows_setup
 # main
 
@@ -49,6 +52,12 @@ import uuid
 from collections import deque
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
+
+# <os>_<arch>_dist: wins_x86_64_dist, linux_arm64_dist, macos_x86_64_dist ...
+_OS = {'win32': 'wins', 'darwin': 'macos'}.get(sys.platform, 'linux')
+_M = platform.machine().lower()
+_ARCH = {'amd64': 'x86_64', 'x64': 'x86_64', 'aarch64': 'arm64'}.get(_M, _M)
+DIST = os.path.join(ROOT, f'{_OS}_{_ARCH}_dist')
 
 # ---- this repo -----------------------------------------------------------------------------------
 CONFIG = {
@@ -149,35 +158,84 @@ def _icon() -> str: #vers 2
     return out
 
 
-def _pyinstaller(icon: str): #vers 1
-    """Folder build (dist/<APP>/<APP> + _internal/), windowed, no UPX."""
+def _pyinstaller(icon: str): #vers 2
+    """Folder build (<os>_<arch>_dist/<APP>/<APP> + _internal/), windowed, no UPX."""
     args = [os.path.join(ROOT, CONFIG['launcher']), '--name', CONFIG['name'], '--noconfirm', '--clean',
-            '--windowed', '--onedir', '--noupx', '--distpath', os.path.join(ROOT, 'dist'),
+            '--windowed', '--onedir', '--noupx', '--distpath', DIST,
             '--workpath', os.path.join(ROOT, 'build'), '--specpath', os.path.join(ROOT, 'build'),
             '--paths', ROOT, '--exclude-module', 'tkinter']
     for m in _app_modules() + CONFIG['hidden']:
         args += ['--hidden-import', m]
     for d in _apps_data():
         args += ['--add-data', d]
+    if sys.platform == 'win32':
+        args += ['--version-file', _version_file()]
     if icon:
         args += ['--icon', icon]
     if sys.platform == 'darwin':
         args += ['--osx-bundle-identifier', 'com.xseti.' + CONFIG['name'].lower()]
     _run([sys.executable, '-m', 'PyInstaller'] + args)
-    out = os.path.join(ROOT, 'dist', CONFIG['name'])
+    out = os.path.join(DIST, CONFIG['name'])
     for name in CONFIG['beside_exe']:                    # defaults the exe reads / writes next to itself
         src = os.path.join(ROOT, name)
         if os.path.isdir(src):
             shutil.copytree(src, os.path.join(out, name), dirs_exist_ok=True)
 
 
+def _version_file() -> str: #vers 1
+    """Windows version resource (company, product, version); fewer Defender alarms."""
+    name, title = CONFIG['name'], CONFIG['title']
+    t = time.localtime()
+    nums = (t.tm_year, t.tm_mon, t.tm_mday, 0)
+    dotted = '.'.join(str(n) for n in nums)
+    strings = {'CompanyName': 'X-Seti', 'FileDescription': title, 'FileVersion': dotted,
+               'InternalName': name, 'LegalCopyright': 'X-Seti', 'OriginalFilename': name + '.exe',
+               'ProductName': title, 'ProductVersion': dotted}
+    items = ',\n'.join(f"          StringStruct('{k}', '{v}')" for k, v in strings.items())
+    text = f"""VSVersionInfo(
+  ffi=FixedFileInfo(filevers={nums}, prodvers={nums}, mask=0x3f, flags=0x0, OS=0x40004,
+                    fileType=0x1, subtype=0x0, date=(0, 0)),
+  kids=[
+    StringFileInfo([StringTable('040904B0', [
+{items}])]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
+"""
+    out = os.path.join(ROOT, 'build', 'version_info.txt')
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(out, 'w', encoding='utf-8') as f:
+        f.write(text)
+    return out
+
+
+def _drop(): #vers 1
+    """--drop: built program and _internal/ copied into the repo root (git ignores them)."""
+    name = CONFIG['name']
+    if sys.platform == 'darwin':
+        pairs = [(os.path.join(DIST, name + '.app'), os.path.join(ROOT, name + '.app'))]
+    else:
+        exe = name + ('.exe' if sys.platform == 'win32' else '')
+        pairs = [(os.path.join(DIST, name, n), os.path.join(ROOT, n)) for n in (exe, '_internal')]
+    for src, dst in pairs:
+        if os.path.isdir(dst) and not os.path.islink(dst):
+            shutil.rmtree(dst)
+        elif os.path.lexists(dst):
+            os.remove(dst)
+        if os.path.isdir(src):
+            shutil.copytree(src, dst, symlinks=True)
+        else:
+            shutil.copy2(src, dst)
+    print('Dropped', name, 'into', ROOT)
+
+
 def _smoke_test(): #vers 3
     """Start the built program; it must still be running after 15 s (Linux without a display: xvfb-run)."""
     name = CONFIG['name']
     if sys.platform == 'darwin':
-        exe = os.path.join(ROOT, 'dist', name + '.app', 'Contents', 'MacOS', name)
+        exe = os.path.join(DIST, name + '.app', 'Contents', 'MacOS', name)
     else:
-        exe = os.path.join(ROOT, 'dist', name, name + ('.exe' if sys.platform == 'win32' else ''))
+        exe = os.path.join(DIST, name, name + ('.exe' if sys.platform == 'win32' else ''))
     cmd, env = [exe], dict(os.environ, QT_QPA_PLATFORM='offscreen')
     if sys.platform.startswith('linux'):
         env.pop('QT_QPA_PLATFORM')                       # apps choose xcb themselves
@@ -200,19 +258,19 @@ def _smoke_test(): #vers 3
 
 
 def _package() -> str: #vers 1
-    """dist/<APP>_<Platform>_<arch>.zip (macOS: the .app; Linux: .tar.gz)."""
+    """<os>_<arch>_dist/<APP>_<Platform>_<arch>.zip (macOS: the .app; Linux: .tar.gz)."""
     name, tag = CONFIG['name'], _platform_tag()
-    base = os.path.join(ROOT, 'dist', f'{name}_{tag}')
+    base = os.path.join(DIST, f'{name}_{tag}')
     if sys.platform == 'darwin':
-        return shutil.make_archive(base, 'zip', os.path.join(ROOT, 'dist'), name + '.app')
+        return shutil.make_archive(base, 'zip', DIST, name + '.app')
     fmt = 'gztar' if sys.platform.startswith('linux') else 'zip'
-    return shutil.make_archive(base, fmt, os.path.join(ROOT, 'dist'), name)
+    return shutil.make_archive(base, fmt, DIST, name)
 
 
 def _linux_scripts(icon: str): #vers 1
-    """install.sh / uninstall.sh and the icon into dist/<APP>/ (per user, no root)."""
+    """install.sh / uninstall.sh and the icon into <os>_<arch>_dist/<APP>/ (per user, no root)."""
     name, title = CONFIG['name'], CONFIG['title']
-    out = os.path.join(ROOT, 'dist', name)
+    out = os.path.join(DIST, name)
     if icon:
         shutil.copy(icon, os.path.join(out, name + '.png'))
     install = f"""#!/bin/sh
@@ -266,7 +324,7 @@ def _windows_setup(icon: str) -> str: #vers 1
              f'AppName={title}', f'AppVersion={time.strftime("%Y.%m.%d")}', 'AppPublisher=X-Seti',
              f'DefaultDirName={{autopf}}\\{title}', f'DefaultGroupName={title}',
              'PrivilegesRequired=lowest', 'PrivilegesRequiredOverridesAllowed=dialog',
-             f'OutputDir={os.path.join(ROOT, "dist")}', f'OutputBaseFilename={name}_{tag}_Setup',
+             f'OutputDir={DIST}', f'OutputBaseFilename={name}_{tag}_Setup',
              f'UninstallDisplayIcon={{app}}\\{name}.exe', 'Compression=lzma2', 'SolidCompression=yes',
              'WizardStyle=modern',
              'ArchitecturesAllowed=' + ('arm64' if tag.endswith('arm64') else 'x64compatible'),
@@ -278,7 +336,7 @@ def _windows_setup(icon: str) -> str: #vers 1
     lines += ['', '[Tasks]',
               'Name: desktopicon; Description: "{cm:CreateDesktopIcon}"; Flags: unchecked',
               '', '[Files]',
-              f'Source: "{os.path.join(ROOT, "dist", name)}\\*"; DestDir: "{{app}}"; '
+              f'Source: "{os.path.join(DIST, name)}\\*"; DestDir: "{{app}}"; '
               'Flags: ignoreversion recursesubdirs createallsubdirs',
               '', '[Icons]',
               f'Name: "{{group}}\\{title}"; Filename: "{{app}}\\{name}.exe"',
@@ -291,7 +349,7 @@ def _windows_setup(icon: str) -> str: #vers 1
     with open(iss, 'w', encoding='utf-8-sig') as f:
         f.write('\n'.join(lines) + '\n')
     _run([iscc, '/Q', iss])
-    return os.path.join(ROOT, 'dist', f'{name}_{tag}_Setup.exe')
+    return os.path.join(DIST, f'{name}_{tag}_Setup.exe')
 
 
 def _mac_dmg() -> str: #vers 1
@@ -300,9 +358,9 @@ def _mac_dmg() -> str: #vers 1
     stage = os.path.join(ROOT, 'build', 'dmg')
     shutil.rmtree(stage, ignore_errors=True)
     os.makedirs(stage)
-    shutil.copytree(os.path.join(ROOT, 'dist', name + '.app'), os.path.join(stage, name + '.app'), symlinks=True)
+    shutil.copytree(os.path.join(DIST, name + '.app'), os.path.join(stage, name + '.app'), symlinks=True)
     os.symlink('/Applications', os.path.join(stage, 'Applications'))
-    out = os.path.join(ROOT, 'dist', f'{name}_{tag}.dmg')
+    out = os.path.join(DIST, f'{name}_{tag}.dmg')
     _run(['hdiutil', 'create', '-volname', CONFIG['title'], '-srcfolder', stage, '-ov', '-format', 'UDZO', out])
     return out
 
@@ -328,7 +386,7 @@ def _use_venv(): #vers 1
     sys.exit(subprocess.run([py, os.path.abspath(__file__)] + sys.argv[1:], cwd=ROOT).returncode)
 
 
-def main(): #vers 5
+def main(): #vers 6
     if '--name' in sys.argv:
         print(CONFIG['name'])
         return
@@ -339,6 +397,8 @@ def main(): #vers 5
         icon = _icon()
         _pyinstaller(icon)
         _smoke_test()
+        if '--drop' in sys.argv:
+            _drop()
         if sys.platform.startswith('linux'):
             _linux_scripts(icon)
         print('Built', _package())

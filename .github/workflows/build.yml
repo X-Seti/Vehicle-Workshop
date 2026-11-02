@@ -1,5 +1,5 @@
-# this belongs in root /.github/workflows/build.yml - Version: 5
-# X-Seti - October 29 2026 - IMG Factory 1.6 core + Full builds, installers on Windows / Linux / macOS (x64 + arm64)
+# this belongs in root /.github/workflows/build.yml - Version: 6
+# X-Seti - November 02 2026 - Standalone workshop builds, installers on Windows / Linux / macOS (x64 + arm64)
 name: Build
 
 on:
@@ -16,10 +16,14 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, windows-11-arm, ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel]
-        variant: [core, full]                             # Img_Factory, Img_Factory_Full
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
+      # Python first: the next step runs Python (Windows has none on PATH before this).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
       # App Settings System holds the shared utils, themes, images some repos leave out.
       - name: Checkout App Settings System
@@ -47,10 +51,6 @@ jobs:
               shutil.copytree(os.path.join('_app_settings', 'apps', d), p)
           shutil.rmtree('_app_settings')
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
       - name: Qt libraries (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 libfontconfig1 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-render-util0 libxcb-image0 libxcb-xinerama0 xvfb xauth portaudio19-dev liblzo2-dev
@@ -67,16 +67,16 @@ jobs:
       - name: Build, test, package
         env:
           PYTHONUTF8: '1'
-        run: python buildscript.py --ci --variant ${{ matrix.variant }}
+        run: python buildscript.py --ci
 
       - uses: actions/upload-artifact@v4
         with:
-          name: build-${{ matrix.os }}-${{ matrix.variant }}
+          name: build-${{ matrix.os }}
           path: |
-            dist/*.zip
-            dist/*.tar.gz
-            dist/*_Setup.exe
-            dist/*.dmg
+            *_dist/*.zip
+            *_dist/*.tar.gz
+            *_dist/*_Setup.exe
+            *_dist/*.dmg
 
   release:
     needs: build
@@ -95,4 +95,4 @@ jobs:
           gh release delete latest-build --repo "$GITHUB_REPOSITORY" --cleanup-tag -y || true
           gh release create latest-build out/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
             --title "${{ github.event.repository.name }} - latest build" \
-            --notes "Built from main. Img_Factory = IMG Factory with core tools; Img_Factory_Full = every workshop. Windows: run the _Setup.exe (or unzip and run). macOS: open the .dmg, drag the app to Applications (first start: right-click > Open). Linux: tar -xzf, then ./install.sh in the folder (adds a menu entry), or run the program directly."
+            --notes "Built from main. Windows: run the _Setup.exe (or unzip and run). macOS: open the .dmg, drag the app to Applications (first start: right-click > Open). Linux: tar -xzf, then ./install.sh in the folder (adds a menu entry), or run the program directly."

@@ -11,3 +11,6 @@ apps/utils
 apps/themes
 apps/images
 .venv/
+/*_dist/
+/Vehicle_Workshop
+/Vehicle_Workshop.app/
