@@ -68,7 +68,7 @@ CONFIG = {
     'required': ['PyQt6', 'numpy'],
     'optional': ['PyOpenGL', 'mss', 'pycryptodome', 'python-lzo', 'scipy'],
     'hidden': ['PyQt6.QtSvg', 'PyQt6.QtOpenGL', 'PyQt6.QtOpenGLWidgets', 'OpenGL.arrays.numpymodule'],
-    'bundle_files': [],
+    'bundle_files': ['appfactory.settings.json'],
     'beside_exe': [],
 }
 # --------------------------------------------------------------------------------------------------

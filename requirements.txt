@@ -4,5 +4,6 @@ PyQt6
 mss
 numpy
 pycryptodome
+pygame
 python-lzo
 scipy

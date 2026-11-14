@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-# X-Seti - Vehicle-Workshop launcher
+#this belongs in root /launch_vehicle_workshop.py - Version: 2
+# X-Seti - Nov 13 2026 - Vehicle Workshop - Standalone launcher
 import sys, os
+if sys.platform.startswith('linux'):
+    os.environ.setdefault('QT_QPA_PLATFORM', 'xcb')
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from apps.components.Vehicle_Workshop.vehicle_workshop import open_vehicle_workshop
 from PyQt6.QtWidgets import QApplication
+from apps.components.Vehicle_Workshop.vehicle_workshop import open_vehicle_workshop
+
 if __name__ == '__main__':
-    try:
-        from PyQt6.QtGui import QSurfaceFormat
-        f=QSurfaceFormat(); f.setProfile(QSurfaceFormat.OpenGLContextProfile.CompatibilityProfile)
-        f.setVersion(2,1); QSurfaceFormat.setDefaultFormat(f)
-    except Exception: pass
     app = QApplication(sys.argv)
-    w = open_vehicle_workshop()
+    w = open_vehicle_workshop(None, sys.argv[1] if len(sys.argv) > 1 else None)
+    w.setWindowTitle("Vehicle Workshop - Standalone")
     sys.exit(app.exec())
